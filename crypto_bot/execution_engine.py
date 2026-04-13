@@ -1,6 +1,6 @@
 """
 Execution Engine: Handles order execution and position management.
-Interfaces with exchange via CCXT for market orders and native Binance API for SL/TP.
+Uses native Binance API for exchange-side SL/TP with algo endpoint fallback logic.
 """
 import ccxt.async_support as ccxt
 import asyncio
@@ -24,7 +24,7 @@ class ExecutionEngine:
         self.exchange_config = config.exchange
         
         self.exchange = None
-        self.binance_api = None  # Native Binance API for SL/TP
+        self.binance_api = None
         self._initialized = False
         
         # Order tracking
@@ -36,7 +36,7 @@ class ExecutionEngine:
         self.tp_orders: Dict[str, Dict] = {}
     
     async def initialize(self):
-        """Initialize exchange connection and native Binance API."""
+        """Initialize exchange connection and native Binance client."""
         if not self._initialized:
             # Базовая конфигурация с корректировкой времени
             base_config = {
@@ -56,8 +56,6 @@ class ExecutionEngine:
                 base_config['proxy'] = self.exchange_config.proxy_url
             
             self.exchange = getattr(ccxt, self.exchange_config.exchange_id)(base_config)
-            
-            # Initialize native Binance API for SL/TP orders
             self.binance_api = BinanceFuturesAPI(
                 api_key=self.exchange_config.api_key,
                 secret_key=self.exchange_config.api_secret
@@ -71,10 +69,10 @@ class ExecutionEngine:
                 logger.info("Live trading mode enabled in Execution Engine - REAL MONEY")
             
             self._initialized = True
-            logger.info(f"Execution engine initialized on {self.exchange_config.exchange_id} with native Binance API")
+            logger.info(f"Execution engine initialized on {self.exchange_config.exchange_id}")
     
     async def close(self):
-        """Close exchange connection and native Binance API session."""
+        """Close exchange and native API sessions."""
         if self.exchange:
             await self.exchange.close()
         if self.binance_api:
@@ -223,10 +221,7 @@ class ExecutionEngine:
         position_size: float = None
     ) -> Optional[Dict]:
         """
-        Set stop loss order on Binance Futures using NATIVE API with Algo Orders.
-        
-        Uses direct Binance Futures API (fapi.binance.com) with /fapi/v1/algo/order endpoint
-        as per https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
+        Set stop loss on exchange server via native Binance API.
         
         Args:
             symbol: Trading pair (e.g., 'BLESS/USDT:USDT')
@@ -240,35 +235,15 @@ class ExecutionEngine:
         if not self._initialized:
             await self.initialize()
         
-        if not self.binance_api:
-            logger.error("[SL ERROR] Native Binance API not initialized")
-            return None
-        
         try:
-            # Get market info for proper price formatting
-            market = self.exchange.market(symbol)
-            precision = market.get('precision', {}).get('price', 8)
+            stop_price_formatted = float(self.exchange.price_to_precision(symbol, stop_price))
             
-            # Format price according to exchange precision using proper rounding
-            tick_size = market.get('limits', {}).get('price', {}).get('min', 0.00001)
-            
-            # Round to tick size
-            if tick_size and tick_size > 0:
-                stop_price_formatted = round(round(stop_price / tick_size) * tick_size, 10)
-            else:
-                # Fallback: use precision directly
-                stop_price_formatted = round(stop_price, int(precision))
-            
-            # Validate price
-            if stop_price_formatted <= 0 or stop_price_formatted != stop_price_formatted:  # NaN check
+            if stop_price_formatted <= 0 or stop_price_formatted != stop_price_formatted:
                 logger.error(f"[SL ERROR] Invalid stop price: {stop_price} -> {stop_price_formatted}")
                 return None
             
-            logger.info(f"[SL] {symbol}: Original={stop_price}, Formatted={stop_price_formatted}, Precision={precision}")
-            
-            # Use NATIVE Binance API for STOP_LOSS Algo Order
-            logger.info(f"[SL NATIVE] Placing STOP_LOSS Algo Order for {symbol}: Side={side}, StopPrice={stop_price_formatted}")
-            
+            await self.cancel_sl_tp_orders(symbol, order_type='sl')
+
             order = await self.binance_api.place_stop_loss(
                 symbol=symbol,
                 side=side,
@@ -276,28 +251,21 @@ class ExecutionEngine:
                 position_size=position_size
             )
             
-            # Store SL order reference
             self.sl_orders[symbol] = {
+                'id': order.get('orderId'),
                 'algo_id': order.get('algoId'),
                 'type': 'STOP_LOSS',
                 'side': side,
-                'price': stop_price_formatted,
-                'timestamp': order.get('updateTime')
+                'price': stop_price_formatted
             }
             
-            logger.info(f"[SL SET] {symbol} {side.upper()} @ {stop_price_formatted} | AlgoId={order.get('algoId')}")
+            logger.info(f"[SL SET] {symbol} {side.upper()} @ {stop_price_formatted} | exchange-side")
             
             return order
             
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"[SL ERROR] Failed to set stop loss via native API: {error_msg}")
-            
-            # Log detailed error for debugging
-            import traceback
-            logger.error(f"[SL DEBUG] Traceback: {traceback.format_exc()}")
-            
-            logger.warning(f"[SL FALLBACK] Cannot set SL on exchange, will monitor programmatically")
+            logger.error(f"[SL ERROR] Failed to set stop loss on exchange: {error_msg}")
             return None
     
     async def set_take_profit(
@@ -308,10 +276,7 @@ class ExecutionEngine:
         position_size: float = None
     ) -> Optional[Dict]:
         """
-        Set take profit order on Binance Futures using NATIVE API with Algo Orders.
-        
-        Uses direct Binance Futures API (fapi.binance.com) with /fapi/v1/algo/order endpoint
-        as per https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
+        Set take profit on exchange server via native Binance API.
         
         Args:
             symbol: Trading pair (e.g., 'BLESS/USDT:USDT')
@@ -325,35 +290,15 @@ class ExecutionEngine:
         if not self._initialized:
             await self.initialize()
         
-        if not self.binance_api:
-            logger.error("[TP ERROR] Native Binance API not initialized")
-            return None
-        
         try:
-            # Get market info for proper price formatting
-            market = self.exchange.market(symbol)
-            precision = market.get('precision', {}).get('price', 8)
+            tp_price_formatted = float(self.exchange.price_to_precision(symbol, take_profit_price))
             
-            # Format price according to exchange precision using proper rounding
-            tick_size = market.get('limits', {}).get('price', {}).get('min', 0.00001)
-            
-            # Round to tick size
-            if tick_size and tick_size > 0:
-                tp_price_formatted = round(round(take_profit_price / tick_size) * tick_size, 10)
-            else:
-                # Fallback: use precision directly
-                tp_price_formatted = round(take_profit_price, int(precision))
-            
-            # Validate price
-            if tp_price_formatted <= 0 or tp_price_formatted != tp_price_formatted:  # NaN check
+            if tp_price_formatted <= 0 or tp_price_formatted != tp_price_formatted:
                 logger.error(f"[TP ERROR] Invalid take profit price: {take_profit_price} -> {tp_price_formatted}")
                 return None
             
-            logger.info(f"[TP] {symbol}: Original={take_profit_price}, Formatted={tp_price_formatted}, Precision={precision}")
-            
-            # Use NATIVE Binance API for TAKE_PROFIT Algo Order
-            logger.info(f"[TP NATIVE] Placing TAKE_PROFIT Algo Order for {symbol}: Side={side}, TP={tp_price_formatted}")
-            
+            await self.cancel_sl_tp_orders(symbol, order_type='tp')
+
             order = await self.binance_api.place_take_profit(
                 symbol=symbol,
                 side=side,
@@ -361,29 +306,70 @@ class ExecutionEngine:
                 position_size=position_size
             )
             
-            # Store TP order reference
             self.tp_orders[symbol] = {
+                'id': order.get('orderId'),
                 'algo_id': order.get('algoId'),
                 'type': 'TAKE_PROFIT',
                 'side': side,
-                'price': tp_price_formatted,
-                'timestamp': order.get('updateTime')
+                'price': tp_price_formatted
             }
             
-            logger.info(f"[TP SET] {symbol} {side.upper()} @ {tp_price_formatted} | AlgoId={order.get('algoId')}")
+            logger.info(f"[TP SET] {symbol} {side.upper()} @ {tp_price_formatted} | exchange-side")
             
             return order
             
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"[TP ERROR] Failed to set take profit via native API: {error_msg}")
-            
-            # Log detailed error for debugging
-            import traceback
-            logger.error(f"[TP DEBUG] Traceback: {traceback.format_exc()}")
-            
-            logger.warning(f"[TP FALLBACK] Cannot set TP on exchange, will monitor programmatically")
+            logger.error(f"[TP ERROR] Failed to set take profit on exchange: {error_msg}")
             return None
+
+    async def cancel_sl_tp_orders(self, symbol: str, order_type: str = 'all'):
+        """Cancel tracked SL/TP orders for a symbol."""
+        if not self._initialized:
+            await self.initialize()
+
+        try:
+            if order_type in ['sl', 'all'] and symbol in self.sl_orders:
+                sl_id = self.sl_orders[symbol].get('id')
+                sl_algo_id = self.sl_orders[symbol].get('algo_id')
+                if sl_algo_id and self.binance_api:
+                    await self.binance_api.cancel_algo_order(symbol, sl_algo_id)
+                elif sl_id:
+                    try:
+                        if self.binance_api:
+                            await self.binance_api.cancel_order(symbol, sl_id)
+                        else:
+                            await self.exchange.cancel_order(sl_id, symbol)
+                    except Exception as e:
+                        logger.debug(f"[CANCEL SL] {symbol}: {e}")
+                self.sl_orders.pop(symbol, None)
+
+            if order_type in ['tp', 'all'] and symbol in self.tp_orders:
+                tp_id = self.tp_orders[symbol].get('id')
+                tp_algo_id = self.tp_orders[symbol].get('algo_id')
+                if tp_algo_id and self.binance_api:
+                    await self.binance_api.cancel_algo_order(symbol, tp_algo_id)
+                elif tp_id:
+                    try:
+                        if self.binance_api:
+                            await self.binance_api.cancel_order(symbol, tp_id)
+                        else:
+                            await self.exchange.cancel_order(tp_id, symbol)
+                    except Exception as e:
+                        logger.debug(f"[CANCEL TP] {symbol}: {e}")
+                self.tp_orders.pop(symbol, None)
+        except Exception as e:
+            logger.error(f"[CANCEL SL/TP ERROR] {symbol}: {e}")
+
+    async def update_stop_loss(self, symbol: str, side: str, new_stop_price: float) -> bool:
+        """Replace current SL with a new exchange-side SL order."""
+        order = await self.set_stop_loss(symbol, side, new_stop_price)
+        return order is not None
+
+    async def update_take_profit(self, symbol: str, side: str, new_tp_price: float) -> bool:
+        """Replace current TP with a new exchange-side TP order."""
+        order = await self.set_take_profit(symbol, side, new_tp_price)
+        return order is not None
 
     async def get_price_precision(self, symbol: str) -> int:
         """Get price precision for a symbol."""
@@ -418,7 +404,7 @@ class ExecutionEngine:
             return 0.01
     
     async def cancel_all_orders(self, symbol: str):
-        """Cancel all open orders for a symbol using both CCXT and native API."""
+        """Cancel all open orders for a symbol using CCXT and native endpoints."""
         if not self._initialized:
             await self.initialize()
         
@@ -426,18 +412,17 @@ class ExecutionEngine:
             # Cancel via CCXT
             await self.exchange.cancel_all_orders(symbol)
             logger.info(f"[CCXT] Cancelled all orders for {symbol}")
-            
-            # Also cancel via native API to ensure SL/TP are removed
+
             if self.binance_api:
-                await self.binance_api.cancel_all_open_orders(symbol)
-                logger.info(f"[NATIVE] Cancelled all orders for {symbol}")
+                regular_ok = await self.binance_api.cancel_all_open_orders(symbol)
+                logger.info(f"[NATIVE] cancel_all_open_orders={regular_ok} for {symbol}")
             
             # Clear local tracking
             self.open_orders.pop(symbol, None)
             self.sl_orders.pop(symbol, None)
             self.tp_orders.pop(symbol, None)
             
-            logger.info(f"Cancelled all orders for {symbol} (CCXT + Native)")
+            logger.info(f"Cancelled all orders for {symbol}")
         except Exception as e:
             logger.error(f"Error cancelling orders for {symbol}: {e}")
             return None
@@ -506,7 +491,7 @@ class ExecutionEngine:
             
             if order:
                 close_price = order.get('average', order.get('price', 0.0))
-                logger.info(f"✓ SUCCESS: Closed {side.upper()} position on {symbol}: {amount} @ {close_price} ({close_side.upper()})")
+                logger.info(f"[CLOSE OK] Closed {side.upper()} position on {symbol}: {amount} @ {close_price} ({close_side.upper()})")
                 return close_price
             
             logger.error(f"Order returned None for {symbol}")
@@ -554,28 +539,10 @@ class ExecutionEngine:
                 return False
             
             actual_entry = order.get('average', entry_price)
-            
-            # Set stop loss FIRST - on exchange with closePosition=True
-            if stop_loss and stop_loss > 0:
-                sl_side = 'sell' if direction == 'long' else 'buy'
-                sl_order = await self.set_stop_loss(
-                    symbol, 
-                    sl_side, 
-                    stop_loss,
-                    position_size=position_size  # Pass position size for algo order
-                )
-                # SL is now set on exchange, will trigger automatically
-            
-            # Set take profit SECOND - on exchange with closePosition=True
-            if take_profit and take_profit > 0:
-                tp_side = 'sell' if direction == 'long' else 'buy'
-                tp_order = await self.set_take_profit(
-                    symbol, 
-                    tp_side, 
-                    take_profit,
-                    position_size=position_size  # Pass position size for algo order
-                )
-                # TP is now set on exchange, will trigger automatically
+            logger.info(
+                f"[EXEC] Position opened without exchange SL/TP orders for {symbol}. "
+                f"Exit is managed by bot strategy (market close on SL/TP conditions)."
+            )
             
             return True
             

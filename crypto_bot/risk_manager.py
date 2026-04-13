@@ -376,7 +376,7 @@ class RiskManager:
                 position.stop_loss = position.entry_price * 1.001  # Just above entry
         else:  # short
             if current_price < position.entry_price * 0.99:  # 1% profit
-                position.stop_loss = position.entry_price * 1.001  # Just below entry
+                position.stop_loss = position.entry_price * 0.999  # Just below entry
     
     def trail_stop_loss(self, symbol: str, current_price: float, atr: float):
         """Implement trailing stop loss."""

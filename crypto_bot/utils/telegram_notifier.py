@@ -30,30 +30,29 @@ class TelegramNotifier:
         if not self.enabled:
             return False
         
-        try:
-            import aiohttp
-            
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            data = {
-                'chat_id': self.chat_id,
-                'text': message,
-                'parse_mode': 'HTML'
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=data) as response:
-                    result = await response.json()
-                    
-                    if result.get('ok'):
-                        logger.info("Telegram message sent successfully")
-                        return True
-                    else:
-                        logger.error(f"Telegram error: {result}")
-                        return False
-                        
-        except Exception as e:
-            logger.error(f"Error sending Telegram message: {e}")
-            return False
+        import aiohttp
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        data = {
+            'chat_id': self.chat_id,
+            'text': message,
+            'parse_mode': 'HTML'
+        }
+
+        for attempt in range(2):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, json=data) as response:
+                        result = await response.json()
+                        if result.get('ok'):
+                            logger.info("Telegram message sent successfully")
+                            return True
+                        logger.error(f"Telegram error (attempt {attempt+1}): {result}")
+            except Exception as e:
+                logger.error(f"Error sending Telegram message (attempt {attempt+1}): {e}")
+            await asyncio.sleep(0.5)
+
+        return False
     
     async def notify_entry(
         self,
