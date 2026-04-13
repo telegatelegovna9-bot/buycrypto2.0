@@ -56,19 +56,40 @@ class BinanceFuturesAPI:
             params['signature'] = self._generate_signature(query_string)
             
         headers = {
-            'X-MBX-APIKEY': self.api_key,
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'X-MBX-APIKEY': self.api_key
         }
         
         try:
-            async with self.session.request(method, url, params=params if method == 'GET' else None, data=params if method == 'POST' else None, headers=headers) as response:
-                data = await response.json()
-                
-                if response.status != 200:
-                    logger.error(f"Binance API Error {response.status}: {data}")
-                    raise Exception(f"Binance API Error: {data}")
+            # For POST requests, send data as form-encoded in body
+            # For GET requests, send params in URL
+            if method == 'POST':
+                # Convert params to form-encoded string for POST body
+                data_str = urlencode(params)
+                async with self.session.request(method, url, data=data_str, headers=headers) as response:
+                    # Check content type before parsing JSON
+                    content_type = response.headers.get('Content-Type', '')
+                    if 'application/json' not in content_type:
+                        error_text = await response.text()
+                        logger.error(f"Unexpected response content-type: {content_type}, Body: {error_text[:500]}")
+                        raise Exception(f"Binance API returned non-JSON response: {response.status}")
                     
-                return data
+                    data = await response.json()
+                    
+                    if response.status != 200:
+                        logger.error(f"Binance API Error {response.status}: {data}")
+                        raise Exception(f"Binance API Error: {data}")
+                        
+                    return data
+            else:
+                # GET request - params go in URL
+                async with self.session.request(method, url, params=params, headers=headers) as response:
+                    data = await response.json()
+                    
+                    if response.status != 200:
+                        logger.error(f"Binance API Error {response.status}: {data}")
+                        raise Exception(f"Binance API Error: {data}")
+                        
+                    return data
         except Exception as e:
             logger.error(f"Request failed: {e}")
             raise
@@ -107,10 +128,10 @@ class BinanceFuturesAPI:
 
     async def place_stop_loss(self, symbol: str, side: str, stop_price: float, position_size: float = None) -> Dict:
         """
-        Place a STOP_LOSS algo order using /fapi/v1/algo/order endpoint.
-        Uses SUB_ORDER_TYPE = STOP_MARKET with quantity.
+        Place a STOP_MARKET order for stop loss using /fapi/v1/order endpoint.
+        For Futures, we use type=STOP_MARKET with closePosition=true to close entire position.
         
-        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
+        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api
         """
         binance_symbol = await self._normalize_symbol(symbol)
         
@@ -121,36 +142,34 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[SL] Detected position size: {position_size} for {symbol}")
         
-        # Format quantity according to exchange precision (use stepSize from LOT_SIZE filter)
-        # Most perpetual futures use integer quantities, but some like BTC allow decimals
-        # We'll format with up to 3 decimal places and strip trailing zeros
+        # Format quantity according to exchange precision
         qty_str = f"{position_size:.3f}".rstrip('0').rstrip('.')
         
-        # For STOP_LOSS algo order:
-        # - algoType: STOP_LOSS
-        # - algoSubType: STOP_MARKET (for market order when triggered)
-        # - side: opposite to position side (SELL for long, BUY for short)
-        # - quantity: the amount to close
+        # For Futures STOP_MARKET order to close position:
+        # - type: STOP_MARKET
+        # - side: opposite to position (SELL for long, BUY for short)
         # - stopPrice: trigger price
-        # - workingType: MARK_PRICE or CONTRACT_PRICE
+        # - closePosition: true (closes entire position, ignores quantity)
+        # - workingType: MARK_PRICE
+        # - positionSide: BOTH (for hedge mode disabled)
         
         params = {
             'symbol': binance_symbol,
-            'algoType': 'STOP_LOSS',
-            'algoSubType': 'STOP_MARKET',
-            'side': side.upper(),  # SELL for long position, BUY for short
-            'quantity': qty_str,
+            'side': side.upper(),
+            'type': 'STOP_MARKET',
             'stopPrice': str(stop_price),
+            'closePosition': 'true',
             'workingType': 'MARK_PRICE',
+            'positionSide': 'BOTH',
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing SL Algo Order for {symbol}: Side={side}, Stop={stop_price}, Qty={qty_str}, BinanceSymbol={binance_symbol}")
+        logger.info(f"[NATIVE API] Placing SL STOP_MARKET for {symbol}: Side={side}, Stop={stop_price}, ClosePosition=true, BinanceSymbol={binance_symbol}")
         logger.debug(f"[NATIVE API] SL Params: {params}")
         
         try:
-            result = await self._request('POST', '/fapi/v1/algo/order', params=params, signed=True)
-            logger.info(f"[NATIVE API] SL Algo Order placed successfully: ID={result.get('algoId')}, OrderId={result.get('orderList', [{}])[0].get('orderId') if result.get('orderList') else 'N/A'}")
+            result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
+            logger.info(f"[NATIVE API] SL Order placed successfully: OrderId={result.get('orderId')}, Status={result.get('status')}")
             return result
         except Exception as e:
             logger.error(f"[NATIVE API] Failed to place SL: {e}")
@@ -158,10 +177,10 @@ class BinanceFuturesAPI:
 
     async def place_take_profit(self, symbol: str, side: str, tp_price: float, position_size: float = None) -> Dict:
         """
-        Place a TAKE_PROFIT algo order using /fapi/v1/algo/order endpoint.
-        Uses SUB_ORDER_TYPE = TAKE_PROFIT_MARKET with quantity.
+        Place a TAKE_PROFIT_MARKET order for take profit using /fapi/v1/order endpoint.
+        For Futures, we use type=TAKE_PROFIT_MARKET with closePosition=true to close entire position.
         
-        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
+        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api
         """
         binance_symbol = await self._normalize_symbol(symbol)
         
@@ -172,36 +191,34 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[TP] Detected position size: {position_size} for {symbol}")
         
-        # Format quantity according to exchange precision (use stepSize from LOT_SIZE filter)
-        # Most perpetual futures use integer quantities, but some like BTC allow decimals
-        # We'll format with up to 3 decimal places and strip trailing zeros
+        # Format quantity according to exchange precision
         qty_str = f"{position_size:.3f}".rstrip('0').rstrip('.')
         
-        # For TAKE_PROFIT algo order:
-        # - algoType: TAKE_PROFIT
-        # - algoSubType: TAKE_PROFIT_MARKET (for market order when triggered)
-        # - side: opposite to position side (SELL for long, BUY for short)
-        # - quantity: the amount to close
+        # For Futures TAKE_PROFIT_MARKET order to close position:
+        # - type: TAKE_PROFIT_MARKET
+        # - side: opposite to position (SELL for long, BUY for short)
         # - stopPrice: trigger price
-        # - workingType: MARK_PRICE or CONTRACT_PRICE
+        # - closePosition: true (closes entire position, ignores quantity)
+        # - workingType: MARK_PRICE
+        # - positionSide: BOTH (for hedge mode disabled)
         
         params = {
             'symbol': binance_symbol,
-            'algoType': 'TAKE_PROFIT',
-            'algoSubType': 'TAKE_PROFIT_MARKET',
-            'side': side.upper(),  # SELL for long position, BUY for short
-            'quantity': qty_str,
+            'side': side.upper(),
+            'type': 'TAKE_PROFIT_MARKET',
             'stopPrice': str(tp_price),
+            'closePosition': 'true',
             'workingType': 'MARK_PRICE',
+            'positionSide': 'BOTH',
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing TP Algo Order for {symbol}: Side={side}, TP={tp_price}, Qty={qty_str}, BinanceSymbol={binance_symbol}")
+        logger.info(f"[NATIVE API] Placing TP TAKE_PROFIT_MARKET for {symbol}: Side={side}, TP={tp_price}, ClosePosition=true, BinanceSymbol={binance_symbol}")
         logger.debug(f"[NATIVE API] TP Params: {params}")
         
         try:
-            result = await self._request('POST', '/fapi/v1/algo/order', params=params, signed=True)
-            logger.info(f"[NATIVE API] TP Algo Order placed successfully: ID={result.get('algoId')}, OrderId={result.get('orderList', [{}])[0].get('orderId') if result.get('orderList') else 'N/A'}")
+            result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
+            logger.info(f"[NATIVE API] TP Order placed successfully: OrderId={result.get('orderId')}, Status={result.get('status')}")
             return result
         except Exception as e:
             logger.error(f"[NATIVE API] Failed to place TP: {e}")

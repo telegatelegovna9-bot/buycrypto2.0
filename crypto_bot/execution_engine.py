@@ -266,8 +266,8 @@ class ExecutionEngine:
             
             logger.info(f"[SL] {symbol}: Original={stop_price}, Formatted={stop_price_formatted}, Precision={precision}")
             
-            # Use NATIVE Binance API for STOP_LOSS algo order
-            logger.info(f"[SL NATIVE] Placing STOP_LOSS Algo Order for {symbol}: Side={side}, StopPrice={stop_price_formatted}, Qty={position_size}")
+            # Use NATIVE Binance API for STOP_MARKET order with closePosition=true
+            logger.info(f"[SL NATIVE] Placing STOP_MARKET for {symbol}: Side={side}, StopPrice={stop_price_formatted}")
             
             order = await self.binance_api.place_stop_loss(
                 symbol=symbol,
@@ -278,15 +278,14 @@ class ExecutionEngine:
             
             # Store SL order reference
             self.sl_orders[symbol] = {
-                'algo_id': order.get('algoId'),
-                'order_id': order.get('orderList', [{}])[0].get('orderId') if order.get('orderList') else None,
-                'type': 'STOP_LOSS_ALGO',
+                'order_id': order.get('orderId'),
+                'type': 'STOP_MARKET',
                 'side': side,
                 'price': stop_price_formatted,
                 'timestamp': order.get('updateTime')
             }
             
-            logger.info(f"[SL SET] {symbol} {side.upper()} @ {stop_price_formatted} | AlgoID={order.get('algoId')}")
+            logger.info(f"[SL SET] {symbol} {side.upper()} @ {stop_price_formatted} | OrderId={order.get('orderId')}")
             
             return order
             
@@ -352,8 +351,8 @@ class ExecutionEngine:
             
             logger.info(f"[TP] {symbol}: Original={take_profit_price}, Formatted={tp_price_formatted}, Precision={precision}")
             
-            # Use NATIVE Binance API for TAKE_PROFIT algo order
-            logger.info(f"[TP NATIVE] Placing TAKE_PROFIT Algo Order for {symbol}: Side={side}, TP={tp_price_formatted}, Qty={position_size}")
+            # Use NATIVE Binance API for TAKE_PROFIT_MARKET order with closePosition=true
+            logger.info(f"[TP NATIVE] Placing TAKE_PROFIT_MARKET for {symbol}: Side={side}, TP={tp_price_formatted}")
             
             order = await self.binance_api.place_take_profit(
                 symbol=symbol,
@@ -364,15 +363,14 @@ class ExecutionEngine:
             
             # Store TP order reference
             self.tp_orders[symbol] = {
-                'algo_id': order.get('algoId'),
-                'order_id': order.get('orderList', [{}])[0].get('orderId') if order.get('orderList') else None,
-                'type': 'TAKE_PROFIT_ALGO',
+                'order_id': order.get('orderId'),
+                'type': 'TAKE_PROFIT_MARKET',
                 'side': side,
                 'price': tp_price_formatted,
                 'timestamp': order.get('updateTime')
             }
             
-            logger.info(f"[TP SET] {symbol} {side.upper()} @ {tp_price_formatted} | AlgoID={order.get('algoId')}")
+            logger.info(f"[TP SET] {symbol} {side.upper()} @ {tp_price_formatted} | OrderId={order.get('orderId')}")
             
             return order
             
