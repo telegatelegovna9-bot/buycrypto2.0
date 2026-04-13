@@ -204,17 +204,18 @@ class ExecutionEngine:
         self, 
         symbol: str, 
         side: str, 
-        amount: float,
         stop_price: float
     ) -> Optional[Dict]:
         """
         Set stop loss order on Binance Futures.
-        Uses STOP_MARKET order type with reduceOnly=True.
+        
+        CRITICAL: Uses STOP_MARKET with closePosition=True.
+        - NO amount parameter (uses closePosition=True instead)
+        - NO reduceOnly parameter (not needed with closePosition)
         
         Args:
             symbol: Trading pair
             side: 'buy' or 'sell' (opposite of position direction)
-            amount: Position size to close
             stop_price: Trigger price for stop loss
         
         Returns:
@@ -224,68 +225,76 @@ class ExecutionEngine:
             await self.initialize()
         
         try:
-            # Get price precision for proper rounding
-            precision = await self.get_price_precision(symbol)
-            stop_price_rounded = round(stop_price, precision)
+            # Get market info for proper price formatting
+            market = self.exchange.market(symbol)
+            precision = market.get('precision', {}).get('price', 8)
             
-            # CRITICAL: Use STOP_MARKET with reduceOnly=True
-            # This ensures we only close position, never open new one
+            # Format price according to exchange precision using proper rounding
+            tick_size = market.get('limits', {}).get('price', {}).get('min', 0.00001)
+            
+            # Round to tick size
+            if tick_size and tick_size > 0:
+                stop_price_formatted = round(round(stop_price / tick_size) * tick_size, 10)
+            else:
+                # Fallback: use precision directly
+                stop_price_formatted = round(stop_price, int(precision))
+            
+            # Validate price
+            if stop_price_formatted <= 0 or stop_price_formatted != stop_price_formatted:  # NaN check
+                logger.error(f"[SL ERROR] Invalid stop price: {stop_price} -> {stop_price_formatted}")
+                return None
+            
+            logger.info(f"[SL] {symbol}: Original={stop_price}, Formatted={stop_price_formatted}, Precision={precision}")
+            
+            # CRITICAL: STOP_MARKET with closePosition=True, NO amount, NO reduceOnly
+            # For Binance Futures, we need to use specific params structure
+            logger.info(f"[SL DEBUG] Symbol: {symbol}, Type: STOP_MARKET, Side: {side}, StopPrice: {stop_price_formatted}")
+            
             order = await self.exchange.create_order(
                 symbol=symbol,
                 type='STOP_MARKET',
                 side=side,
-                amount=amount,
+                amount=None,  # Must be None when using closePosition
                 params={
-                    'stopPrice': stop_price_rounded,
-                    'reduceOnly': True,
-                    'workingType': 'MARK_PRICE'  # Use mark price to avoid wick liquidations
+                    'stopPrice': stop_price_formatted,
+                    'closePosition': True,  # Close entire position
+                    'workingType': 'MARK_PRICE',  # Use mark price to avoid wick liquidations
+                    'newOrderRespType': 'RESULT',
+                    'positionSide': 'BOTH',  # Required for Binance Futures one-way mode
+                    'timeInForce': 'GTC'  # Good Till Cancel - required for stop orders
                 }
             )
             
-            logger.info(f"✓ Stop Loss set (STOP_MARKET): {symbol} {side.upper()} @ {stop_price_rounded}, Amount: {amount}")
+            logger.info(f"[SL DEBUG] Order created: ID={order.get('id')}, Status={order.get('status')}")
+            logger.info(f"[SL SET] {symbol} {side.upper()} @ {stop_price_formatted} | Type: STOP_MARKET")
+            
             return order
             
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"Error setting stop loss: {error_msg}")
+            logger.error(f"[SL ERROR] Failed to set stop loss: {error_msg}")
             
-            # If STOP_MARKET fails, try STOP order type as fallback
-            if '-4120' in error_msg or 'not supported' in error_msg.lower():
-                try:
-                    order = await self.exchange.create_order(
-                        symbol=symbol,
-                        type='STOP',
-                        side=side,
-                        amount=amount,
-                        price=stop_price_rounded,  # Required for STOP type
-                        params={
-                            'stopPrice': stop_price_rounded,
-                            'reduceOnly': True,
-                            'workingType': 'MARK_PRICE'
-                        }
-                    )
-                    logger.info(f"✓ Stop Loss set (STOP fallback): {symbol} @ {stop_price_rounded}")
-                    return order
-                except Exception as fallback_error:
-                    logger.error(f"Fallback stop loss also failed: {fallback_error}")
-            
+            # EMERGENCY: If SL cannot be set, log error but don't close position
+            # The position will be monitored programmatically instead
+            logger.warning(f"[SL FALLBACK] Cannot set SL on exchange, will monitor programmatically")
             return None
     
     async def set_take_profit(
         self, 
         symbol: str, 
         side: str, 
-        amount: float,
         take_profit_price: float
     ) -> Optional[Dict]:
         """
         Set take profit order on Binance Futures.
-        Uses TAKE_PROFIT_MARKET order type with reduceOnly=True.
+        
+        CRITICAL: Uses TAKE_PROFIT_MARKET with closePosition=True.
+        - NO amount parameter (uses closePosition=True instead)
+        - NO reduceOnly parameter (not needed with closePosition)
         
         Args:
             symbol: Trading pair
             side: 'buy' or 'sell' (opposite of position direction)
-            amount: Position size to close
             take_profit_price: Trigger price for take profit
         
         Returns:
@@ -295,50 +304,58 @@ class ExecutionEngine:
             await self.initialize()
         
         try:
-            # Get price precision for proper rounding
-            precision = await self.get_price_precision(symbol)
-            tp_price_rounded = round(take_profit_price, precision)
+            # Get market info for proper price formatting
+            market = self.exchange.market(symbol)
+            precision = market.get('precision', {}).get('price', 8)
             
-            # CRITICAL: Use TAKE_PROFIT_MARKET with reduceOnly=True
+            # Format price according to exchange precision using proper rounding
+            tick_size = market.get('limits', {}).get('price', {}).get('min', 0.00001)
+            
+            # Round to tick size
+            if tick_size and tick_size > 0:
+                tp_price_formatted = round(round(take_profit_price / tick_size) * tick_size, 10)
+            else:
+                # Fallback: use precision directly
+                tp_price_formatted = round(take_profit_price, int(precision))
+            
+            # Validate price
+            if tp_price_formatted <= 0 or tp_price_formatted != tp_price_formatted:  # NaN check
+                logger.error(f"[TP ERROR] Invalid take profit price: {take_profit_price} -> {tp_price_formatted}")
+                return None
+            
+            logger.info(f"[TP] {symbol}: Original={take_profit_price}, Formatted={tp_price_formatted}, Precision={precision}")
+            
+            # CRITICAL: TAKE_PROFIT_MARKET with closePosition=True, NO amount, NO reduceOnly
+            # For Binance Futures, we need to use specific params structure
+            logger.info(f"[TP DEBUG] Symbol: {symbol}, Type: TAKE_PROFIT_MARKET, Side: {side}, StopPrice: {tp_price_formatted}")
+            
             order = await self.exchange.create_order(
                 symbol=symbol,
                 type='TAKE_PROFIT_MARKET',
                 side=side,
-                amount=amount,
+                amount=None,  # Must be None when using closePosition
                 params={
-                    'stopPrice': tp_price_rounded,
-                    'reduceOnly': True,
-                    'workingType': 'MARK_PRICE'
+                    'stopPrice': tp_price_formatted,
+                    'closePosition': True,  # Close entire position
+                    'workingType': 'MARK_PRICE',
+                    'newOrderRespType': 'RESULT',
+                    'positionSide': 'BOTH',  # Required for Binance Futures one-way mode
+                    'timeInForce': 'GTC'  # Good Till Cancel - required for stop orders
                 }
             )
             
-            logger.info(f"✓ Take Profit set (TAKE_PROFIT_MARKET): {symbol} {side.upper()} @ {tp_price_rounded}, Amount: {amount}")
+            logger.info(f"[TP DEBUG] Order created: ID={order.get('id')}, Status={order.get('status')}")
+            logger.info(f"[TP SET] {symbol} {side.upper()} @ {tp_price_formatted} | Type: TAKE_PROFIT_MARKET")
+            
             return order
             
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"Error setting take profit: {error_msg}")
+            logger.error(f"[TP ERROR] Failed to set take profit: {error_msg}")
             
-            # Fallback to TAKE_PROFIT order type
-            if '-4120' in error_msg or 'not supported' in error_msg.lower():
-                try:
-                    order = await self.exchange.create_order(
-                        symbol=symbol,
-                        type='TAKE_PROFIT',
-                        side=side,
-                        amount=amount,
-                        price=tp_price_rounded,
-                        params={
-                            'stopPrice': tp_price_rounded,
-                            'reduceOnly': True,
-                            'workingType': 'MARK_PRICE'
-                        }
-                    )
-                    logger.info(f"✓ Take Profit set (TAKE_PROFIT fallback): {symbol} @ {tp_price_rounded}")
-                    return order
-                except Exception as fallback_error:
-                    logger.error(f"Fallback take profit also failed: {fallback_error}")
-            
+            # EMERGENCY: If TP cannot be set, log error but don't close position
+            # The position will be monitored programmatically instead
+            logger.warning(f"[TP FALLBACK] Cannot set TP on exchange, will monitor programmatically")
             return None
 
     async def get_price_precision(self, symbol: str) -> int:
@@ -499,27 +516,25 @@ class ExecutionEngine:
             
             actual_entry = order.get('average', entry_price)
             
-            # Set stop loss FIRST - programmatic monitoring only
+            # Set stop loss FIRST - on exchange with closePosition=True
             if stop_loss and stop_loss > 0:
                 sl_side = 'sell' if direction == 'long' else 'buy'
-                await self.set_stop_loss(
+                sl_order = await self.set_stop_loss(
                     symbol, 
                     sl_side, 
-                    position_size,
                     stop_loss
                 )
-                # SL is now monitored programmatically in manage_positions()
+                # SL is now set on exchange, will trigger automatically
             
-            # Set take profit SECOND - programmatic monitoring only
+            # Set take profit SECOND - on exchange with closePosition=True
             if take_profit and take_profit > 0:
                 tp_side = 'sell' if direction == 'long' else 'buy'
-                await self.set_take_profit(
+                tp_order = await self.set_take_profit(
                     symbol, 
                     tp_side, 
-                    position_size,
                     take_profit
                 )
-                # TP is now monitored programmatically in manage_positions()
+                # TP is now set on exchange, will trigger automatically
             
             return True
             
