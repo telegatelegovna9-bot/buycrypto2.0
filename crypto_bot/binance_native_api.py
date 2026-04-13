@@ -42,6 +42,7 @@ class BinanceFuturesAPI:
         return int(time.time() * 1000)
         
     async def _request(self, method: str, path: str, params: Dict[str, Any] = None, signed: bool = False) -> Dict:
+        """Make HTTP request to Binance API with proper form encoding for orders."""
         if self.session is None:
             await self.start_session()
             
@@ -56,40 +57,38 @@ class BinanceFuturesAPI:
             params['signature'] = self._generate_signature(query_string)
             
         headers = {
-            'X-MBX-APIKEY': self.api_key
+            'X-MBX-APIKEY': self.api_key,
+            'Content-Type': 'application/x-www-form-urlencoded'
         }
         
         try:
             # For POST requests, send data as form-encoded in body
-            # For GET requests, send params in URL
             if method == 'POST':
                 # Convert params to form-encoded string for POST body
                 data_str = urlencode(params)
                 async with self.session.request(method, url, data=data_str, headers=headers) as response:
-                    # Check content type before parsing JSON
-                    content_type = response.headers.get('Content-Type', '')
-                    if 'application/json' not in content_type:
-                        error_text = await response.text()
-                        logger.error(f"Unexpected response content-type: {content_type}, Body: {error_text[:500]}")
-                        raise Exception(f"Binance API returned non-JSON response: {response.status}")
-                    
-                    data = await response.json()
+                    text = await response.text()
                     
                     if response.status != 200:
-                        logger.error(f"Binance API Error {response.status}: {data}")
-                        raise Exception(f"Binance API Error: {data}")
-                        
-                    return data
+                        # Try to parse error JSON, otherwise return text
+                        try:
+                            error_data = json.loads(text)
+                            raise Exception(f"Binance API Error {response.status}: {error_data}")
+                        except json.JSONDecodeError:
+                            raise Exception(f"Binance API Error {response.status}: {text}")
+                    return json.loads(text)
             else:
                 # GET request - params go in URL
                 async with self.session.request(method, url, params=params, headers=headers) as response:
-                    data = await response.json()
+                    text = await response.text()
                     
                     if response.status != 200:
-                        logger.error(f"Binance API Error {response.status}: {data}")
-                        raise Exception(f"Binance API Error: {data}")
-                        
-                    return data
+                        try:
+                            error_data = json.loads(text)
+                            raise Exception(f"Binance API Error {response.status}: {error_data}")
+                        except json.JSONDecodeError:
+                            raise Exception(f"Binance API Error {response.status}: {text}")
+                    return json.loads(text)
         except Exception as e:
             logger.error(f"Request failed: {e}")
             raise
@@ -128,16 +127,8 @@ class BinanceFuturesAPI:
 
     async def place_stop_loss(self, symbol: str, side: str, stop_price: float, position_size: float = None) -> Dict:
         """
-        Place STOP_LOSS algo order via /fapi/v1/algo/order
-        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
-        
-        Parameters:
-        - algoType: STOP_LOSS or TAKE_PROFIT
-        - side: SELL (for long) or BUY (for short)
-        - positionSide: BOTH
-        - stopPrice: trigger price
-        - quantity: position size to close
-        - workingType: MARK_PRICE or CONTRACT_PRICE
+        Place STOP_MARKET order via /fapi/v1/order with closePosition=true
+        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api
         """
         binance_symbol = await self._normalize_symbol(symbol)
         
@@ -148,44 +139,33 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[SL] Detected position size: {position_size} for {symbol}")
         
-        # Format quantity and price according to exchange precision
-        qty_str = f"{position_size:.3f}".rstrip('0').rstrip('.')
-        
         params = {
             'symbol': binance_symbol,
-            'algoType': 'STOP_LOSS',
             'side': side.upper(),
-            'positionSide': 'BOTH',
+            'type': 'STOP_MARKET',
             'stopPrice': str(stop_price),
-            'quantity': qty_str,
+            'closePosition': 'true',
             'workingType': 'MARK_PRICE',
+            'positionSide': 'BOTH',
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing SL Algo Order for {symbol}: Side={side}, Stop={stop_price}, Qty={qty_str}, BinanceSymbol={binance_symbol}")
+        logger.info(f"[NATIVE API] Placing SL STOP_MARKET for {symbol}: Side={side}, Stop={stop_price}, ClosePosition=true, BinanceSymbol={binance_symbol}")
         logger.debug(f"[NATIVE API] SL Params: {params}")
         
         try:
-            result = await self._request('POST', '/fapi/v1/algo/order', params=params, signed=True)
-            algo_id = result.get('algoId', 'N/A')
-            logger.info(f"[NATIVE API] SL Algo Order placed successfully: AlgoId={algo_id}")
+            result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
+            order_id = result.get('orderId', 'N/A')
+            logger.info(f"[NATIVE API] SL Order placed successfully: OrderId={order_id}")
             return result
         except Exception as e:
-            logger.error(f"[NATIVE API] Failed to place SL Algo Order: {e}")
+            logger.error(f"[NATIVE API] Failed to place SL: {e}")
             raise
 
     async def place_take_profit(self, symbol: str, side: str, tp_price: float, position_size: float = None) -> Dict:
         """
-        Place TAKE_PROFIT algo order via /fapi/v1/algo/order
-        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
-        
-        Parameters:
-        - algoType: STOP_LOSS or TAKE_PROFIT
-        - side: SELL (for long) or BUY (for short)
-        - positionSide: BOTH
-        - stopPrice: trigger price
-        - quantity: position size to close
-        - workingType: MARK_PRICE or CONTRACT_PRICE
+        Place TAKE_PROFIT_MARKET order via /fapi/v1/order with closePosition=true
+        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api
         """
         binance_symbol = await self._normalize_symbol(symbol)
         
@@ -196,30 +176,27 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[TP] Detected position size: {position_size} for {symbol}")
         
-        # Format quantity according to exchange precision
-        qty_str = f"{position_size:.3f}".rstrip('0').rstrip('.')
-        
         params = {
             'symbol': binance_symbol,
-            'algoType': 'TAKE_PROFIT',
             'side': side.upper(),
-            'positionSide': 'BOTH',
+            'type': 'TAKE_PROFIT_MARKET',
             'stopPrice': str(tp_price),
-            'quantity': qty_str,
+            'closePosition': 'true',
             'workingType': 'MARK_PRICE',
+            'positionSide': 'BOTH',
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing TP Algo Order for {symbol}: Side={side}, TP={tp_price}, Qty={qty_str}, BinanceSymbol={binance_symbol}")
+        logger.info(f"[NATIVE API] Placing TP TAKE_PROFIT_MARKET for {symbol}: Side={side}, TP={tp_price}, ClosePosition=true, BinanceSymbol={binance_symbol}")
         logger.debug(f"[NATIVE API] TP Params: {params}")
         
         try:
-            result = await self._request('POST', '/fapi/v1/algo/order', params=params, signed=True)
-            algo_id = result.get('algoId', 'N/A')
-            logger.info(f"[NATIVE API] TP Algo Order placed successfully: AlgoId={algo_id}")
+            result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
+            order_id = result.get('orderId', 'N/A')
+            logger.info(f"[NATIVE API] TP Order placed successfully: OrderId={order_id}")
             return result
         except Exception as e:
-            logger.error(f"[NATIVE API] Failed to place TP Algo Order: {e}")
+            logger.error(f"[NATIVE API] Failed to place TP: {e}")
             raise
 
     async def get_algo_orders(self, symbol: str = None) -> list:
