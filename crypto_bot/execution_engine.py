@@ -1,6 +1,7 @@
 """
 Execution Engine: Handles order execution and position management.
-Interfaces with exchange via CCXT for market orders and native Binance API for SL/TP.
+Interfaces with exchange via CCXT for all orders.
+SL/TP are managed programmatically by monitoring positions.
 """
 import ccxt.async_support as ccxt
 import asyncio
@@ -8,7 +9,6 @@ from typing import Dict, Optional, List
 import logging
 from strategies.base_strategy import Signal
 from risk_manager import Position
-from binance_native_api import BinanceFuturesAPI
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 class ExecutionEngine:
     """
     Handles all exchange interactions for order execution.
-    Supports market orders, limit orders, stop-loss, and take-profit.
+    Supports market orders, limit orders.
+    SL/TP are managed programmatically - no exchange orders.
     """
     
     def __init__(self, config):
@@ -24,19 +25,17 @@ class ExecutionEngine:
         self.exchange_config = config.exchange
         
         self.exchange = None
-        self.binance_api = None  # Native Binance API for SL/TP
         self._initialized = False
         
         # Order tracking
         self.open_orders: Dict[str, List[Dict]] = {}
         self.order_history: List[Dict] = []
         
-        # SL/TP order tracking per symbol
-        self.sl_orders: Dict[str, Dict] = {}
-        self.tp_orders: Dict[str, Dict] = {}
+        # Position tracking for SL/TP monitoring
+        self.monitored_positions: Dict[str, Dict] = {}
     
     async def initialize(self):
-        """Initialize exchange connection and native Binance API."""
+        """Initialize exchange connection."""
         if not self._initialized:
             # Базовая конфигурация с корректировкой времени
             base_config = {
@@ -57,13 +56,6 @@ class ExecutionEngine:
             
             self.exchange = getattr(ccxt, self.exchange_config.exchange_id)(base_config)
             
-            # Initialize native Binance API for SL/TP orders
-            self.binance_api = BinanceFuturesAPI(
-                api_key=self.exchange_config.api_key,
-                secret_key=self.exchange_config.api_secret
-            )
-            await self.binance_api.start_session()
-            
             if self.exchange_config.sandbox:
                 self.exchange.set_sandbox_mode(True)
                 logger.warning("Sandbox mode enabled in Execution Engine - using testnet")
@@ -71,14 +63,12 @@ class ExecutionEngine:
                 logger.info("Live trading mode enabled in Execution Engine - REAL MONEY")
             
             self._initialized = True
-            logger.info(f"Execution engine initialized on {self.exchange_config.exchange_id} with native Binance API")
+            logger.info(f"Execution engine initialized on {self.exchange_config.exchange_id}")
     
     async def close(self):
-        """Close exchange connection and native Binance API session."""
+        """Close exchange connection."""
         if self.exchange:
             await self.exchange.close()
-        if self.binance_api:
-            await self.binance_api.close_session()
         self._initialized = False
     
     async def get_balance(self) -> Dict:
@@ -215,175 +205,81 @@ class ExecutionEngine:
             logger.error(f"Error executing limit order: {e}")
             return None
     
-    async def set_stop_loss(
-        self, 
-        symbol: str, 
-        side: str, 
-        stop_price: float,
-        position_size: float = None
-    ) -> Optional[Dict]:
+    async def register_position(self, symbol: str, direction: str, entry_price: float, 
+                                 stop_loss: float, take_profit: float, size: float):
         """
-        Set stop loss order on Binance Futures using NATIVE API with Algo Orders.
-        
-        Uses direct Binance Futures API (fapi.binance.com) with /fapi/v1/algo/order endpoint
-        as per https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
+        Register a position for programmatic SL/TP monitoring.
+        Bot will check these levels every second and close position when hit.
         
         Args:
-            symbol: Trading pair (e.g., 'BLESS/USDT:USDT')
-            side: 'buy' or 'sell' (opposite of position direction)
-            stop_price: Trigger price for stop loss
-            position_size: Amount to close (optional, will be fetched if not provided)
-        
-        Returns:
-            Order dict if successful, None if failed
+            symbol: Trading pair
+            direction: 'long' or 'short'
+            entry_price: Entry price
+            stop_loss: Stop loss price
+            take_profit: Take profit price
+            size: Position size
         """
-        if not self._initialized:
-            await self.initialize()
-        
-        if not self.binance_api:
-            logger.error("[SL ERROR] Native Binance API not initialized")
-            return None
-        
-        try:
-            # Get market info for proper price formatting
-            market = self.exchange.market(symbol)
-            precision = market.get('precision', {}).get('price', 8)
-            
-            # Format price according to exchange precision using proper rounding
-            tick_size = market.get('limits', {}).get('price', {}).get('min', 0.00001)
-            
-            # Round to tick size
-            if tick_size and tick_size > 0:
-                stop_price_formatted = round(round(stop_price / tick_size) * tick_size, 10)
-            else:
-                # Fallback: use precision directly
-                stop_price_formatted = round(stop_price, int(precision))
-            
-            # Validate price
-            if stop_price_formatted <= 0 or stop_price_formatted != stop_price_formatted:  # NaN check
-                logger.error(f"[SL ERROR] Invalid stop price: {stop_price} -> {stop_price_formatted}")
-                return None
-            
-            logger.info(f"[SL] {symbol}: Original={stop_price}, Formatted={stop_price_formatted}, Precision={precision}")
-            
-            # Use NATIVE Binance API for STOP_LOSS Algo Order
-            logger.info(f"[SL NATIVE] Placing STOP_LOSS Algo Order for {symbol}: Side={side}, StopPrice={stop_price_formatted}")
-            
-            order = await self.binance_api.place_stop_loss(
-                symbol=symbol,
-                side=side,
-                stop_price=stop_price_formatted,
-                position_size=position_size
-            )
-            
-            # Store SL order reference
-            self.sl_orders[symbol] = {
-                'algo_id': order.get('algoId'),
-                'type': 'STOP_LOSS',
-                'side': side,
-                'price': stop_price_formatted,
-                'timestamp': order.get('updateTime')
-            }
-            
-            logger.info(f"[SL SET] {symbol} {side.upper()} @ {stop_price_formatted} | AlgoId={order.get('algoId')}")
-            
-            return order
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"[SL ERROR] Failed to set stop loss via native API: {error_msg}")
-            
-            # Log detailed error for debugging
-            import traceback
-            logger.error(f"[SL DEBUG] Traceback: {traceback.format_exc()}")
-            
-            logger.warning(f"[SL FALLBACK] Cannot set SL on exchange, will monitor programmatically")
-            return None
+        self.monitored_positions[symbol] = {
+            'direction': direction,
+            'entry_price': entry_price,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'size': size,
+            'registered_at': asyncio.get_event_loop().time()
+        }
+        logger.info(f"[MONITOR] Registered {symbol} {direction.upper()} | SL={stop_loss:.4f}, TP={take_profit:.4f}")
     
-    async def set_take_profit(
-        self, 
-        symbol: str, 
-        side: str, 
-        take_profit_price: float,
-        position_size: float = None
-    ) -> Optional[Dict]:
+    def unregister_position(self, symbol: str):
+        """Remove position from monitoring."""
+        self.monitored_positions.pop(symbol, None)
+        logger.info(f"[MONITOR] Unregistered {symbol}")
+    
+    async def check_and_close_position(self, symbol: str, current_price: float) -> Optional[str]:
         """
-        Set take profit order on Binance Futures using NATIVE API with Algo Orders.
-        
-        Uses direct Binance Futures API (fapi.binance.com) with /fapi/v1/algo/order endpoint
-        as per https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
+        Check if SL or TP is hit and close position if needed.
         
         Args:
-            symbol: Trading pair (e.g., 'BLESS/USDT:USDT')
-            side: 'buy' or 'sell' (opposite of position direction)
-            take_profit_price: Trigger price for take profit
-            position_size: Amount to close (optional, will be fetched if not provided)
-        
+            symbol: Trading pair
+            current_price: Current market price
+            
         Returns:
-            Order dict if successful, None if failed
+            Exit reason ('stop_loss', 'take_profit') or None
         """
-        if not self._initialized:
-            await self.initialize()
-        
-        if not self.binance_api:
-            logger.error("[TP ERROR] Native Binance API not initialized")
+        if symbol not in self.monitored_positions:
             return None
         
-        try:
-            # Get market info for proper price formatting
-            market = self.exchange.market(symbol)
-            precision = market.get('precision', {}).get('price', 8)
-            
-            # Format price according to exchange precision using proper rounding
-            tick_size = market.get('limits', {}).get('price', {}).get('min', 0.00001)
-            
-            # Round to tick size
-            if tick_size and tick_size > 0:
-                tp_price_formatted = round(round(take_profit_price / tick_size) * tick_size, 10)
+        pos = self.monitored_positions[symbol]
+        direction = pos['direction']
+        sl = pos['stop_loss']
+        tp = pos['take_profit']
+        
+        exit_reason = None
+        
+        # Check SL/TP based on direction
+        if direction == 'long':
+            if current_price <= sl:
+                exit_reason = 'stop_loss'
+            elif current_price >= tp:
+                exit_reason = 'take_profit'
+        else:  # short
+            if current_price >= sl:
+                exit_reason = 'stop_loss'
+            elif current_price <= tp:
+                exit_reason = 'take_profit'
+        
+        if exit_reason:
+            logger.info(f"[CHECK] {symbol}: {exit_reason.upper()} HIT! Price={current_price:.4f}, Level={sl if exit_reason == 'stop_loss' else tp:.4f}")
+            # Close position on exchange
+            close_price = await self.close_position(symbol)
+            if close_price > 0:
+                logger.info(f"[CLOSE] {symbol} closed @ {close_price:.4f} due to {exit_reason}")
+                self.unregister_position(symbol)
+                return exit_reason
             else:
-                # Fallback: use precision directly
-                tp_price_formatted = round(take_profit_price, int(precision))
-            
-            # Validate price
-            if tp_price_formatted <= 0 or tp_price_formatted != tp_price_formatted:  # NaN check
-                logger.error(f"[TP ERROR] Invalid take profit price: {take_profit_price} -> {tp_price_formatted}")
+                logger.error(f"[CLOSE] Failed to close {symbol}")
                 return None
-            
-            logger.info(f"[TP] {symbol}: Original={take_profit_price}, Formatted={tp_price_formatted}, Precision={precision}")
-            
-            # Use NATIVE Binance API for TAKE_PROFIT Algo Order
-            logger.info(f"[TP NATIVE] Placing TAKE_PROFIT Algo Order for {symbol}: Side={side}, TP={tp_price_formatted}")
-            
-            order = await self.binance_api.place_take_profit(
-                symbol=symbol,
-                side=side,
-                tp_price=tp_price_formatted,
-                position_size=position_size
-            )
-            
-            # Store TP order reference
-            self.tp_orders[symbol] = {
-                'algo_id': order.get('algoId'),
-                'type': 'TAKE_PROFIT',
-                'side': side,
-                'price': tp_price_formatted,
-                'timestamp': order.get('updateTime')
-            }
-            
-            logger.info(f"[TP SET] {symbol} {side.upper()} @ {tp_price_formatted} | AlgoId={order.get('algoId')}")
-            
-            return order
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"[TP ERROR] Failed to set take profit via native API: {error_msg}")
-            
-            # Log detailed error for debugging
-            import traceback
-            logger.error(f"[TP DEBUG] Traceback: {traceback.format_exc()}")
-            
-            logger.warning(f"[TP FALLBACK] Cannot set TP on exchange, will monitor programmatically")
-            return None
+        
+        return None
 
     async def get_price_precision(self, symbol: str) -> int:
         """Get price precision for a symbol."""
@@ -418,7 +314,7 @@ class ExecutionEngine:
             return 0.01
     
     async def cancel_all_orders(self, symbol: str):
-        """Cancel all open orders for a symbol using both CCXT and native API."""
+        """Cancel all open orders for a symbol."""
         if not self._initialized:
             await self.initialize()
         
@@ -427,17 +323,10 @@ class ExecutionEngine:
             await self.exchange.cancel_all_orders(symbol)
             logger.info(f"[CCXT] Cancelled all orders for {symbol}")
             
-            # Also cancel via native API to ensure SL/TP are removed
-            if self.binance_api:
-                await self.binance_api.cancel_all_open_orders(symbol)
-                logger.info(f"[NATIVE] Cancelled all orders for {symbol}")
-            
             # Clear local tracking
             self.open_orders.pop(symbol, None)
-            self.sl_orders.pop(symbol, None)
-            self.tp_orders.pop(symbol, None)
             
-            logger.info(f"Cancelled all orders for {symbol} (CCXT + Native)")
+            logger.info(f"Cancelled all orders for {symbol}")
         except Exception as e:
             logger.error(f"Error cancelling orders for {symbol}: {e}")
             return None
@@ -555,28 +444,18 @@ class ExecutionEngine:
             
             actual_entry = order.get('average', entry_price)
             
-            # Set stop loss FIRST - on exchange with closePosition=True
-            if stop_loss and stop_loss > 0:
-                sl_side = 'sell' if direction == 'long' else 'buy'
-                sl_order = await self.set_stop_loss(
-                    symbol, 
-                    sl_side, 
-                    stop_loss,
-                    position_size=position_size  # Pass position size for algo order
-                )
-                # SL is now set on exchange, will trigger automatically
+            # Register position for programmatic SL/TP monitoring
+            # Bot will check these levels every second and close position when hit
+            self.register_position(
+                symbol=symbol,
+                direction=direction,
+                entry_price=actual_entry,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                size=position_size
+            )
             
-            # Set take profit SECOND - on exchange with closePosition=True
-            if take_profit and take_profit > 0:
-                tp_side = 'sell' if direction == 'long' else 'buy'
-                tp_order = await self.set_take_profit(
-                    symbol, 
-                    tp_side, 
-                    take_profit,
-                    position_size=position_size  # Pass position size for algo order
-                )
-                # TP is now set on exchange, will trigger automatically
-            
+            logger.info(f"[EXEC] Position registered for monitoring: {symbol} {direction.upper()}")
             return True
             
         except Exception as e:

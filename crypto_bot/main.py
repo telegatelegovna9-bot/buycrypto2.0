@@ -317,16 +317,85 @@ class TradingBot:
                     'strategy': source_strategy
                 }
     
+    async def monitor_positions_fast(self):
+        """
+        FAST position monitoring - checks SL/TP every 1 second.
+        Uses execution_engine.check_and_close_position() for programmatic SL/TP.
+        """
+        if not self.execution_engine.monitored_positions:
+            return
+        
+        # Fetch current prices for ALL monitored positions
+        prices = {}
+        for symbol in self.execution_engine.monitored_positions.keys():
+            try:
+                ticker = await self.data_loader.fetch_ticker(symbol)
+                if ticker and 'last' in ticker:
+                    prices[symbol] = ticker['last']
+            except Exception as e:
+                logger.error(f"Error fetching price for {symbol}: {e}")
+        
+        if not prices:
+            return
+        
+        # Check and close positions where SL/TP is hit
+        for symbol, current_price in prices.items():
+            exit_reason = await self.execution_engine.check_and_close_position(symbol, current_price)
+            
+            if exit_reason:
+                # Position was closed on exchange, now update local state
+                pos_data = self.risk_manager.positions.get(symbol)
+                if pos_data:
+                    # Calculate PnL
+                    if exit_reason == 'stop_loss':
+                        pnl = pos_data.size * (pos_data.stop_loss - pos_data.entry_price)
+                        if pos_data.direction == 'short':
+                            pnl = pos_data.size * (pos_data.entry_price - pos_data.stop_loss)
+                    else:  # take_profit
+                        pnl = pos_data.size * (pos_data.take_profit - pos_data.entry_price)
+                        if pos_data.direction == 'short':
+                            pnl = pos_data.size * (pos_data.entry_price - pos_data.take_profit)
+                    
+                    # Close position locally
+                    self.risk_manager.close_position(symbol, current_price, exit_reason)
+                    
+                    # Update strategy performance
+                    strategies_used = []
+                    if symbol in self.active_signals:
+                        strategy_val = self.active_signals[symbol].get('strategy', [])
+                        if isinstance(strategy_val, list):
+                            strategies_used = strategy_val
+                        elif strategy_val:
+                            strategies_used = [strategy_val]
+                        
+                        is_winner = pnl > 0
+                        for strategy_name in strategies_used:
+                            if strategy_name:
+                                self.meta_controller.update_strategy_performance(
+                                    strategy_name, pnl, is_winner
+                                )
+                        
+                        del self.active_signals[symbol]
+                    
+                    # Send Telegram notification
+                    if self.telegram.enabled:
+                        balance = self.risk_manager.balance
+                        if exit_reason == 'stop_loss':
+                            await self.telegram.notify_stop_loss(symbol, pnl, balance)
+                        elif exit_reason == 'take_profit':
+                            await self.telegram.notify_take_profit(symbol, pnl, balance)
+                    
+                    logger.info(f"Position closed: {symbol} | Reason: {exit_reason} | PnL: ${pnl:.2f}")
+    
     async def manage_positions(self):
         """
         Manage existing positions with FAST monitoring.
         Checks SL/TP every iteration and manages trailing stops.
-        CRITICAL FIX: Separate SL/TP detection from closure to avoid race conditions.
         """
         if not self.risk_manager.positions:
             return
         
-        # Fetch current prices for ALL open positions IMMEDIATELY
+        # Fetch current prices for ALL open positions
         prices = {}
         for symbol in self.risk_manager.positions.keys():
             try:
@@ -343,68 +412,12 @@ class TradingBot:
         # Update positions with current prices
         self.risk_manager.update_positions(prices)
         
-        # PHASE 1: Detect positions that need to be closed (SL/TP hits)
-        positions_to_close = []
+        # Manage remaining active positions (trailing stop, breakeven)
         for symbol, position in list(self.risk_manager.positions.items()):
             current_price = prices.get(symbol)
             if not current_price:
                 continue
             
-            # Check for SL/TP hit
-            exit_reason = self.risk_manager.check_stop_loss_take_profit(symbol, current_price)
-            
-            if exit_reason:
-                positions_to_close.append((symbol, current_price, exit_reason))
-        
-        # PHASE 2: Execute closures SEPARATELY to avoid modification during iteration
-        for symbol, close_price, exit_reason in positions_to_close:
-            # Сначала закрываем позицию на бирже (в live режиме)
-            if not self.config.exchange.sandbox:
-                close_price_exchange = await self.execution_engine.close_position(symbol)
-                if close_price_exchange > 0:
-                    close_price = close_price_exchange
-                    logger.info(f"✓ Position closed on exchange @ {close_price_exchange}")
-                else:
-                    logger.error(f"✗ FAILED to close position on exchange for {symbol}")
-                    continue  # Skip local close if exchange close failed
-            
-            # Закрываем позицию локально
-            pnl = self.risk_manager.close_position(symbol, close_price, exit_reason)
-            
-            # Определяем, какие стратегии были задействованы
-            strategies_used = []
-            if symbol in self.active_signals:
-                strategy_val = self.active_signals[symbol].get('strategy', [])
-                if isinstance(strategy_val, list):
-                    strategies_used = strategy_val
-                elif strategy_val:
-                    strategies_used = [strategy_val]
-                
-                # Обновляем производительность стратегий
-                is_winner = pnl > 0
-                for strategy_name in strategies_used:
-                    if strategy_name:
-                        self.meta_controller.update_strategy_performance(
-                            strategy_name, pnl, is_winner
-                        )
-                
-                # Удаляем из активных сигналов
-                del self.active_signals[symbol]
-            
-            # Уведомляем через Telegram
-            if self.telegram.enabled:
-                if exit_reason == 'stop_loss':
-                    await self.telegram.notify_stop_loss(symbol, pnl, self.risk_manager.balance)
-                elif exit_reason == 'take_profit':
-                    await self.telegram.notify_take_profit(symbol, pnl, self.risk_manager.balance)
-        
-        # PHASE 3: Manage remaining active positions (trailing stop, breakeven)
-        for symbol, position in list(self.risk_manager.positions.items()):
-            current_price = prices.get(symbol)
-            if not current_price:
-                continue
-            
-            # Only manage positions that are still open (not closed in phase 2)
             if position.unrealized_pnl > 0:
                 # Move stop loss to breakeven when profitable
                 self.risk_manager.move_stop_loss_to_breakeven(symbol, current_price)
@@ -436,6 +449,9 @@ class TradingBot:
         
         iteration = 0
         
+        # Start fast position monitoring task (runs every 1 second)
+        monitor_task = asyncio.create_task(self._fast_monitor_loop())
+        
         while self.is_running:
             try:
                 iteration += 1
@@ -447,7 +463,7 @@ class TradingBot:
                 # Analyze markets and potentially open new positions
                 await self.analyze_and_trade()
                 
-                # Manage existing positions
+                # Manage existing positions (trailing stops, breakeven)
                 await self.manage_positions()
                 
                 # Check for strategy adaptation
@@ -463,7 +479,7 @@ class TradingBot:
                 )
                 
                 # Wait before next iteration
-                await asyncio.sleep(60)  # 1 minute for faster reaction
+                await asyncio.sleep(60)  # 1 minute
                 
             except KeyboardInterrupt:
                 logger.info("Interrupted by user")
@@ -472,7 +488,32 @@ class TradingBot:
                 logger.error(f"Error in trading loop: {e}", exc_info=True)
                 await asyncio.sleep(60)  # Wait before retrying
         
+        # Cancel fast monitor task
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
+        
         logger.info("Trading loop stopped")
+    
+    async def _fast_monitor_loop(self):
+        """
+        Background task that monitors positions every 1 second.
+        Runs independently from main loop for fast SL/TP execution.
+        """
+        logger.info("[FAST MONITOR] Started - checking positions every 1 second")
+        
+        while self.is_running:
+            try:
+                await self.monitor_positions_fast()
+                await asyncio.sleep(1)  # Check every 1 second
+            except asyncio.CancelledError:
+                logger.info("[FAST MONITOR] Stopped")
+                break
+            except Exception as e:
+                logger.error(f"[FAST MONITOR] Error: {e}")
+                await asyncio.sleep(1)
     
     async def run(self):
         """Run the trading bot."""
