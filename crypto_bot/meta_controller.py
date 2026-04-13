@@ -5,6 +5,8 @@ and makes final trading decisions with adaptive weighting.
 """
 import logging
 from typing import List, Dict, Optional
+import os
+import json
 from strategies.base_strategy import Signal, BaseStrategy
 from strategies.market_regime import MarketRegimeDetector
 from strategies.trend_breakout import TrendBreakoutStrategy
@@ -70,8 +72,52 @@ class MetaController:
         
         # Minimum confidence threshold for trading
         self.min_confidence = 0.5
+
+        # Persistent stats storage (survives bot restart)
+        default_stats_file = os.path.join(os.path.dirname(__file__), "data", "strategy_stats.json")
+        self.stats_file = getattr(config, "strategy_stats_file", default_stats_file) if config else default_stats_file
+        self._load_strategy_stats()
         
         logger.info(f"MetaController initialized with {len(self.strategies)} strategies")
+
+    def _load_strategy_stats(self):
+        """Load strategy stats/weights from disk if present."""
+        try:
+            if not os.path.exists(self.stats_file):
+                return
+
+            with open(self.stats_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+            persisted_stats = payload.get("strategy_stats", {})
+            persisted_weights = payload.get("strategy_weights", {})
+
+            for strategy_name in self.strategy_stats.keys():
+                if strategy_name in persisted_stats and isinstance(persisted_stats[strategy_name], dict):
+                    for key in ["wins", "losses", "total_pnl", "total_trades"]:
+                        if key in persisted_stats[strategy_name]:
+                            self.strategy_stats[strategy_name][key] = persisted_stats[strategy_name][key]
+                if strategy_name in persisted_weights:
+                    self.strategy_weights[strategy_name] = float(persisted_weights[strategy_name])
+
+            logger.info(f"Loaded strategy stats from {self.stats_file}")
+        except Exception as e:
+            logger.warning(f"Failed to load strategy stats: {e}")
+
+    def _save_strategy_stats(self):
+        """Persist strategy stats/weights to disk."""
+        try:
+            os.makedirs(os.path.dirname(self.stats_file), exist_ok=True)
+            payload = {
+                "strategy_stats": self.strategy_stats,
+                "strategy_weights": self.strategy_weights
+            }
+            temp_path = f"{self.stats_file}.tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            os.replace(temp_path, self.stats_file)
+        except Exception as e:
+            logger.warning(f"Failed to save strategy stats: {e}")
 
     def update_weights(self, strategy_name: str, is_win: bool, pnl: float):
         """Update strategy weights based on performance."""
@@ -100,6 +146,8 @@ class MetaController:
                 self.strategy_weights[strategy_name] = max(0.1, self.strategy_weights[strategy_name] * 0.95)
                 logger.debug(f"Decreased weight for {strategy_name} to {self.strategy_weights[strategy_name]:.2f}")
 
+        self._save_strategy_stats()
+
     def update_strategy_performance(self, strategy_name: str, pnl: float, is_winner: bool):
         """
         Backward-compatible alias used by TradingBot.
@@ -124,6 +172,7 @@ class MetaController:
                 self.strategy_weights[name] = min(2.0, self.strategy_weights[name] * 1.03)
             elif winrate <= 0.4 or avg_pnl < 0:
                 self.strategy_weights[name] = max(0.1, self.strategy_weights[name] * 0.97)
+        self._save_strategy_stats()
 
     def get_active_strategies(self, regime: str) -> List[str]:
         """Get list of active strategies for current regime."""
