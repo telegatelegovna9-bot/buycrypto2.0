@@ -550,7 +550,10 @@ class ExecutionEngine:
                     stop_loss,
                     position_size=position_size  # Pass position size for algo order
                 )
-                # SL is now set on exchange, will trigger automatically
+                if not sl_order:
+                    logger.error(f"[EXEC FAILSAFE] SL placement failed for {symbol}, closing position immediately")
+                    await self.close_position(symbol)
+                    return False
             
             # Set take profit SECOND - on exchange with closePosition=True
             if take_profit and take_profit > 0:
@@ -561,7 +564,10 @@ class ExecutionEngine:
                     take_profit,
                     position_size=position_size  # Pass position size for algo order
                 )
-                # TP is now set on exchange, will trigger automatically
+                if not tp_order:
+                    logger.error(f"[EXEC FAILSAFE] TP placement failed for {symbol}, closing position immediately")
+                    await self.close_position(symbol)
+                    return False
             
             return True
             

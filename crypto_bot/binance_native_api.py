@@ -22,6 +22,7 @@ class BinanceFuturesAPI:
         self.api_key = api_key
         self.secret_key = secret_key
         self.base_url = "https://fapi.binance.com"
+        self.algo_base_url = "https://api.binance.com"
         self.session: Optional[aiohttp.ClientSession] = None
         
     async def start_session(self):
@@ -42,12 +43,24 @@ class BinanceFuturesAPI:
     def _get_timestamp(self) -> int:
         return int(time.time() * 1000)
         
-    async def _request(self, method: str, path: str, params: Dict[str, Any] = None, signed: bool = False) -> Dict:
+    def _safe_preview(self, text: str, limit: int = 300) -> str:
+        compact = " ".join(text.split())
+        safe = compact.encode("ascii", errors="ignore").decode("ascii")
+        return safe[:limit]
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: Dict[str, Any] = None,
+        signed: bool = False,
+        base_url: Optional[str] = None
+    ) -> Dict:
         """Make HTTP request to Binance API with proper form encoding for orders."""
         if self.session is None:
             await self.start_session()
             
-        url = f"{self.base_url}{path}"
+        url = f"{base_url or self.base_url}{path}"
         
         if params is None:
             params = {}
@@ -76,7 +89,7 @@ class BinanceFuturesAPI:
                             error_data = json.loads(text)
                             raise Exception(f"Binance API Error {response.status}: {error_data}")
                         except json.JSONDecodeError:
-                            raise Exception(f"Binance API Error {response.status}: {text}")
+                            raise Exception(f"Binance API Error {response.status}: {self._safe_preview(text)}")
                     return json.loads(text)
             else:
                 # GET request - params go in URL
@@ -88,10 +101,10 @@ class BinanceFuturesAPI:
                             error_data = json.loads(text)
                             raise Exception(f"Binance API Error {response.status}: {error_data}")
                         except json.JSONDecodeError:
-                            raise Exception(f"Binance API Error {response.status}: {text}")
+                            raise Exception(f"Binance API Error {response.status}: {self._safe_preview(text)}")
                     return json.loads(text)
         except Exception as e:
-            logger.error(f"Request failed: {e}")
+            logger.error(f"Request failed: {self._safe_preview(str(e), limit=500)}")
             raise
 
     async def _normalize_symbol(self, symbol: str) -> str:
@@ -152,24 +165,18 @@ class BinanceFuturesAPI:
         
         logger.info(f"[NATIVE API] Placing SL via /algo/order for {symbol}: Side={side}, Stop={stop_price}")
         try:
-            result = await self._request('POST', '/fapi/v1/algo/order', params=algo_params, signed=True)
+            result = await self._request(
+                'POST',
+                '/sapi/v1/algo/futures/newOrder',
+                params=algo_params,
+                signed=True,
+                base_url=self.algo_base_url
+            )
             logger.info(f"[NATIVE API] SL algo order placed: AlgoId={result.get('algoId')}")
             return result
         except Exception as algo_error:
-            logger.warning(f"[NATIVE API] /algo/order SL failed, fallback to /order: {algo_error}")
-            fallback_params = {
-                'symbol': binance_symbol,
-                'side': side.upper(),
-                'type': 'STOP_MARKET',
-                'stopPrice': stop_price,
-                'closePosition': 'true',
-                'workingType': 'MARK_PRICE',
-                'positionSide': 'BOTH',
-                'newOrderRespType': 'RESULT'
-            }
-            result = await self._request('POST', '/fapi/v1/order', params=fallback_params, signed=True)
-            logger.info(f"[NATIVE API] SL fallback order placed: OrderId={result.get('orderId')}")
-            return result
+            logger.warning(f"[NATIVE API] SL algo order failed: {self._safe_preview(str(algo_error))}")
+            raise
 
     async def place_take_profit(self, symbol: str, side: str, tp_price: float, position_size: float = None) -> Dict:
         """
@@ -197,24 +204,18 @@ class BinanceFuturesAPI:
         
         logger.info(f"[NATIVE API] Placing TP via /algo/order for {symbol}: Side={side}, TP={tp_price}")
         try:
-            result = await self._request('POST', '/fapi/v1/algo/order', params=algo_params, signed=True)
+            result = await self._request(
+                'POST',
+                '/sapi/v1/algo/futures/newOrder',
+                params=algo_params,
+                signed=True,
+                base_url=self.algo_base_url
+            )
             logger.info(f"[NATIVE API] TP algo order placed: AlgoId={result.get('algoId')}")
             return result
         except Exception as algo_error:
-            logger.warning(f"[NATIVE API] /algo/order TP failed, fallback to /order: {algo_error}")
-            fallback_params = {
-                'symbol': binance_symbol,
-                'side': side.upper(),
-                'type': 'TAKE_PROFIT_MARKET',
-                'stopPrice': tp_price,
-                'closePosition': 'true',
-                'workingType': 'MARK_PRICE',
-                'positionSide': 'BOTH',
-                'newOrderRespType': 'RESULT'
-            }
-            result = await self._request('POST', '/fapi/v1/order', params=fallback_params, signed=True)
-            logger.info(f"[NATIVE API] TP fallback order placed: OrderId={result.get('orderId')}")
-            return result
+            logger.warning(f"[NATIVE API] TP algo order failed: {self._safe_preview(str(algo_error))}")
+            raise
 
     async def get_algo_orders(self, symbol: str = None) -> list:
         """Fetch open algo orders (including SL/TP)"""
@@ -223,7 +224,13 @@ class BinanceFuturesAPI:
             params['symbol'] = await self._normalize_symbol(symbol)
         
         try:
-            orders = await self._request('GET', '/fapi/v1/algo/openOrders', params=params, signed=True)
+            orders = await self._request(
+                'GET',
+                '/sapi/v1/algo/futures/openOrders',
+                params=params,
+                signed=True,
+                base_url=self.algo_base_url
+            )
             return orders.get('data', [])
         except Exception as e:
             logger.error(f"Failed to fetch algo orders: {e}")
@@ -236,7 +243,13 @@ class BinanceFuturesAPI:
             'algoId': algo_id
         }
         try:
-            await self._request('DELETE', '/fapi/v1/algo/order', params=params, signed=True)
+            await self._request(
+                'DELETE',
+                '/sapi/v1/algo/futures/cancel',
+                params=params,
+                signed=True,
+                base_url=self.algo_base_url
+            )
             return True
         except Exception as e:
             logger.error(f"Failed to cancel algo order {algo_id}: {e}")
@@ -248,7 +261,13 @@ class BinanceFuturesAPI:
             'symbol': await self._normalize_symbol(symbol)
         }
         try:
-            await self._request('DELETE', '/fapi/v1/algo/allOpenOrders', params=params, signed=True)
+            await self._request(
+                'DELETE',
+                '/sapi/v1/algo/futures/cancelAllOpenOrders',
+                params=params,
+                signed=True,
+                base_url=self.algo_base_url
+            )
             return True
         except Exception as e:
             logger.error(f"Failed to cancel all algo orders for {symbol}: {e}")
