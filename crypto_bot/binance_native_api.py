@@ -82,13 +82,31 @@ class BinanceFuturesAPI:
         # return 'BOTH' if not pos_mode.get('dualSidePosition') else 'LONG/SHORT'
         return 'BOTH'
 
+    async def _normalize_symbol(self, symbol: str) -> str:
+        """
+        Normalize symbol for Binance Futures API.
+        Converts 'BLESS/USDT:USDT' or 'BLESS/USDT' to 'BLESSUSDT'
+        """
+        # Remove '/' and everything after ':' (if present)
+        # Examples:
+        # 'BLESS/USDT:USDT' -> 'BLESSUSDT'
+        # 'BTC/USDT:USDT' -> 'BTCUSDT'
+        # 'ETH/USDT' -> 'ETHUSDT'
+        normalized = symbol.replace('/', '')
+        if ':USDT' in normalized:
+            normalized = normalized.replace(':USDT', '')
+        return normalized
+
     async def place_stop_loss(self, symbol: str, side: str, stop_price: float, position_size: float = None) -> Dict:
         """
         Place a STOP_MARKET order with closePosition=true.
         This ensures the entire position is closed when stop price is hit.
         """
+        # Normalize symbol for Binance Futures API
+        binance_symbol = await self._normalize_symbol(symbol)
+        
         params = {
-            'symbol': symbol.replace('/', ''), # Binance expects BTCUSDT, not BTC/USDT
+            'symbol': binance_symbol,
             'side': side.upper(),
             'type': 'STOP_MARKET',
             'stopPrice': f"{stop_price:.8f}".rstrip('0').rstrip('.'),
@@ -98,7 +116,7 @@ class BinanceFuturesAPI:
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing SL for {symbol}: Side={side}, Stop={stop_price}, Params={params}")
+        logger.info(f"[NATIVE API] Placing SL for {symbol}: Side={side}, Stop={stop_price}, BinanceSymbol={binance_symbol}, Params={params}")
         
         try:
             result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
@@ -112,8 +130,11 @@ class BinanceFuturesAPI:
         """
         Place a TAKE_PROFIT_MARKET order with closePosition=true.
         """
+        # Normalize symbol for Binance Futures API
+        binance_symbol = await self._normalize_symbol(symbol)
+        
         params = {
-            'symbol': symbol.replace('/', ''),
+            'symbol': binance_symbol,
             'side': side.upper(),
             'type': 'TAKE_PROFIT_MARKET',
             'stopPrice': f"{tp_price:.8f}".rstrip('0').rstrip('.'),
@@ -123,7 +144,7 @@ class BinanceFuturesAPI:
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing TP for {symbol}: Side={side}, TP={tp_price}, Params={params}")
+        logger.info(f"[NATIVE API] Placing TP for {symbol}: Side={side}, TP={tp_price}, BinanceSymbol={binance_symbol}, Params={params}")
         
         try:
             result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
@@ -137,7 +158,7 @@ class BinanceFuturesAPI:
         """Fetch open orders to verify SL/TP existence"""
         params = {}
         if symbol:
-            params['symbol'] = symbol.replace('/', '')
+            params['symbol'] = await self._normalize_symbol(symbol)
             
         try:
             orders = await self._request('GET', '/fapi/v1/openOrders', params=params, signed=True)
@@ -149,7 +170,7 @@ class BinanceFuturesAPI:
     async def cancel_order(self, symbol: str, order_id: int) -> bool:
         """Cancel a specific order"""
         params = {
-            'symbol': symbol.replace('/', ''),
+            'symbol': await self._normalize_symbol(symbol),
             'orderId': order_id
         }
         try:
@@ -162,7 +183,7 @@ class BinanceFuturesAPI:
     async def cancel_all_open_orders(self, symbol: str) -> bool:
         """Cancel all open orders for a symbol"""
         params = {
-            'symbol': symbol.replace('/', '')
+            'symbol': await self._normalize_symbol(symbol)
         }
         try:
             await self._request('DELETE', '/fapi/v1/allOpenOrders', params=params, signed=True)
