@@ -368,9 +368,9 @@ class TradingBot:
                 close_price_exchange = await self.execution_engine.close_position(symbol)
                 if close_price_exchange > 0:
                     close_price = close_price_exchange
-                    logger.info(f"✓ Position closed on exchange @ {close_price_exchange}")
+                    logger.info(f"[CLOSE OK] Position closed on exchange @ {close_price_exchange}")
                 else:
-                    logger.error(f"✗ FAILED to close position on exchange for {symbol}")
+                    logger.error(f"[CLOSE FAIL] Failed to close position on exchange for {symbol}")
                     continue  # Skip local close if exchange close failed
             
             # Закрываем позицию локально

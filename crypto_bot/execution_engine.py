@@ -452,20 +452,29 @@ class ExecutionEngine:
                 logger.info(f"No open position to close for {symbol}")
                 return 0.0
             
-            contracts = float(position['contracts'])
-            side = position.get('side', 'long')
-            
-            # CRITICAL FIX: To CLOSE a position, we do the OPPOSITE action
-            # If we are LONG (contracts > 0, side='long'), we must SELL to close
-            # If we are SHORT (contracts < 0, side='short'), we must BUY to close
-            if contracts > 0 or side == 'long':
-                close_side = 'sell'  # Close LONG by selling
-                logger.info(f"Closing LONG position: {contracts} contracts -> SELL {abs(contracts)}")
+            contracts = abs(float(position.get('contracts', 0)))
+            side = str(position.get('side', '')).lower()
+            raw_amt = float(position.get('info', {}).get('positionAmt', 0) or 0)
+
+            # Determine true direction with priority: raw signed amount -> normalized side -> contracts sign fallback
+            if raw_amt < 0:
+                position_direction = 'short'
+            elif raw_amt > 0:
+                position_direction = 'long'
+            elif side in ['short', 'long']:
+                position_direction = side
             else:
-                close_side = 'buy'   # Close SHORT by buying
-                logger.info(f"Closing SHORT position: {contracts} contracts -> BUY {abs(contracts)}")
-            
-            amount = abs(contracts)
+                # Last fallback if exchange doesn't provide both fields reliably
+                position_direction = 'long' if float(position.get('contracts', 0)) > 0 else 'short'
+
+            if position_direction == 'long':
+                close_side = 'sell'
+                logger.info(f"Closing LONG position: {contracts} contracts -> SELL {contracts}")
+            else:
+                close_side = 'buy'
+                logger.info(f"Closing SHORT position: {contracts} contracts -> BUY {contracts}")
+
+            amount = contracts
             
             if amount <= 0:
                 logger.warning(f"Invalid position amount: {amount}")
