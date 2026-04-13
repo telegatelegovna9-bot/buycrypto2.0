@@ -1,7 +1,7 @@
 """
 Native Binance Futures API Client for Risk Management.
-Uses direct HTTP requests to fapi.binance.com to bypass CCXT limitations
-for STOP_MARKET and TAKE_PROFIT_MARKET orders.
+Uses direct HTTP requests to fapi.binance.com for Algo Orders (SL/TP).
+Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
 """
 import hmac
 import hashlib
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class BinanceFuturesAPI:
-    """Direct client for Binance Futures API (fapi)"""
+    """Direct client for Binance Futures API (fapi) using Algo Orders for SL/TP"""
     
     def __init__(self, api_key: str, secret_key: str):
         self.api_key = api_key
@@ -73,54 +73,79 @@ class BinanceFuturesAPI:
             logger.error(f"Request failed: {e}")
             raise
 
-    async def get_position_side_mode(self, symbol: str) -> str:
-        """Check if account is in Hedge Mode or One-Way Mode"""
-        # In a real production env, you might cache this or fetch once at startup
-        # For now, we assume BOTH (One-Way mode compatible) as per previous logic
-        # If you need dynamic detection, uncomment below:
-        # pos_mode = await self._request('GET', '/fapi/v1/positionSide/dual', signed=True)
-        # return 'BOTH' if not pos_mode.get('dualSidePosition') else 'LONG/SHORT'
-        return 'BOTH'
-
     async def _normalize_symbol(self, symbol: str) -> str:
         """
         Normalize symbol for Binance Futures API.
         Converts 'BLESS/USDT:USDT' or 'BLESS/USDT' to 'BLESSUSDT'
         """
-        # Remove '/' and everything after ':' (if present)
-        # Examples:
-        # 'BLESS/USDT:USDT' -> 'BLESSUSDT'
-        # 'BTC/USDT:USDT' -> 'BTCUSDT'
-        # 'ETH/USDT' -> 'ETHUSDT'
         normalized = symbol.replace('/', '')
         if ':USDT' in normalized:
             normalized = normalized.replace(':USDT', '')
         return normalized
 
+    async def _get_position_size(self, symbol: str) -> tuple:
+        """
+        Get current position size and side for a symbol.
+        Returns (abs_amount, side) where side is 'BUY' or 'SELL'
+        """
+        binance_symbol = await self._normalize_symbol(symbol)
+        params = {'symbol': binance_symbol}
+        
+        try:
+            positions = await self._request('GET', '/fapi/v2/positionRisk', params=params, signed=True)
+            for pos in positions:
+                if pos['symbol'] == binance_symbol:
+                    amount = float(pos['positionAmt'])
+                    if amount > 0:
+                        return abs(amount), 'BUY'  # Long position
+                    elif amount < 0:
+                        return abs(amount), 'SELL'  # Short position
+            return 0, None
+        except Exception as e:
+            logger.error(f"Failed to get position size for {symbol}: {e}")
+            return 0, None
+
     async def place_stop_loss(self, symbol: str, side: str, stop_price: float, position_size: float = None) -> Dict:
         """
-        Place a STOP_MARKET order with closePosition=true.
-        This ensures the entire position is closed when stop price is hit.
+        Place a STOP_LOSS algo order using /fapi/v1/algo/order endpoint.
+        Uses SUB_ORDER_TYPE = STOP_MARKET with quantity.
+        
+        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
         """
-        # Normalize symbol for Binance Futures API
         binance_symbol = await self._normalize_symbol(symbol)
+        
+        # Get position size if not provided
+        if position_size is None or position_size == 0:
+            position_size, pos_side = await self._get_position_size(symbol)
+            if position_size == 0:
+                raise Exception(f"No open position found for {symbol}")
+            logger.info(f"[SL] Detected position size: {position_size} for {symbol}")
+        
+        # For STOP_LOSS algo order:
+        # - algoType: STOP_LOSS
+        # - algoSubType: STOP_MARKET (for market order when triggered)
+        # - side: opposite to position side (SELL for long, BUY for short)
+        # - quantity: the amount to close
+        # - stopPrice: trigger price
+        # - workingType: MARK_PRICE or CONTRACT_PRICE
         
         params = {
             'symbol': binance_symbol,
-            'side': side.upper(),
-            'type': 'STOP_MARKET',
+            'algoType': 'STOP_LOSS',
+            'algoSubType': 'STOP_MARKET',
+            'side': side.upper(),  # SELL for long position, BUY for short
+            'quantity': f"{position_size:.8f}".rstrip('0').rstrip('.'),
             'stopPrice': f"{stop_price:.8f}".rstrip('0').rstrip('.'),
-            'closePosition': 'true',  # Critical: closes entire position
             'workingType': 'MARK_PRICE',
-            'positionSide': 'BOTH',   # Compatible with One-Way mode
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing SL for {symbol}: Side={side}, Stop={stop_price}, BinanceSymbol={binance_symbol}, Params={params}")
+        logger.info(f"[NATIVE API] Placing SL Algo Order for {symbol}: Side={side}, Stop={stop_price}, Qty={position_size}, BinanceSymbol={binance_symbol}")
+        logger.debug(f"[NATIVE API] SL Params: {params}")
         
         try:
-            result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
-            logger.info(f"[NATIVE API] SL Order placed successfully: ID={result.get('orderId')}")
+            result = await self._request('POST', '/fapi/v1/algo/order', params=params, signed=True)
+            logger.info(f"[NATIVE API] SL Algo Order placed successfully: ID={result.get('algoId')}, OrderId={result.get('orderList', [{}])[0].get('orderId') if result.get('orderList') else 'N/A'}")
             return result
         except Exception as e:
             logger.error(f"[NATIVE API] Failed to place SL: {e}")
@@ -128,34 +153,90 @@ class BinanceFuturesAPI:
 
     async def place_take_profit(self, symbol: str, side: str, tp_price: float, position_size: float = None) -> Dict:
         """
-        Place a TAKE_PROFIT_MARKET order with closePosition=true.
+        Place a TAKE_PROFIT algo order using /fapi/v1/algo/order endpoint.
+        Uses SUB_ORDER_TYPE = TAKE_PROFIT_MARKET with quantity.
+        
+        Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
         """
-        # Normalize symbol for Binance Futures API
         binance_symbol = await self._normalize_symbol(symbol)
+        
+        # Get position size if not provided
+        if position_size is None or position_size == 0:
+            position_size, pos_side = await self._get_position_size(symbol)
+            if position_size == 0:
+                raise Exception(f"No open position found for {symbol}")
+            logger.info(f"[TP] Detected position size: {position_size} for {symbol}")
+        
+        # For TAKE_PROFIT algo order:
+        # - algoType: TAKE_PROFIT
+        # - algoSubType: TAKE_PROFIT_MARKET (for market order when triggered)
+        # - side: opposite to position side (SELL for long, BUY for short)
+        # - quantity: the amount to close
+        # - stopPrice: trigger price
+        # - workingType: MARK_PRICE or CONTRACT_PRICE
         
         params = {
             'symbol': binance_symbol,
-            'side': side.upper(),
-            'type': 'TAKE_PROFIT_MARKET',
+            'algoType': 'TAKE_PROFIT',
+            'algoSubType': 'TAKE_PROFIT_MARKET',
+            'side': side.upper(),  # SELL for long position, BUY for short
+            'quantity': f"{position_size:.8f}".rstrip('0').rstrip('.'),
             'stopPrice': f"{tp_price:.8f}".rstrip('0').rstrip('.'),
-            'closePosition': 'true',
             'workingType': 'MARK_PRICE',
-            'positionSide': 'BOTH',
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing TP for {symbol}: Side={side}, TP={tp_price}, BinanceSymbol={binance_symbol}, Params={params}")
+        logger.info(f"[NATIVE API] Placing TP Algo Order for {symbol}: Side={side}, TP={tp_price}, Qty={position_size}, BinanceSymbol={binance_symbol}")
+        logger.debug(f"[NATIVE API] TP Params: {params}")
         
         try:
-            result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
-            logger.info(f"[NATIVE API] TP Order placed successfully: ID={result.get('orderId')}")
+            result = await self._request('POST', '/fapi/v1/algo/order', params=params, signed=True)
+            logger.info(f"[NATIVE API] TP Algo Order placed successfully: ID={result.get('algoId')}, OrderId={result.get('orderList', [{}])[0].get('orderId') if result.get('orderList') else 'N/A'}")
             return result
         except Exception as e:
             logger.error(f"[NATIVE API] Failed to place TP: {e}")
             raise
 
+    async def get_algo_orders(self, symbol: str = None) -> list:
+        """Fetch open algo orders (including SL/TP)"""
+        params = {}
+        if symbol:
+            params['symbol'] = await self._normalize_symbol(symbol)
+        
+        try:
+            orders = await self._request('GET', '/fapi/v1/algo/openOrders', params=params, signed=True)
+            return orders.get('data', [])
+        except Exception as e:
+            logger.error(f"Failed to fetch algo orders: {e}")
+            return []
+
+    async def cancel_algo_order(self, symbol: str, algo_id: str) -> bool:
+        """Cancel a specific algo order (SL/TP)"""
+        params = {
+            'symbol': await self._normalize_symbol(symbol),
+            'algoId': algo_id
+        }
+        try:
+            await self._request('DELETE', '/fapi/v1/algo/order', params=params, signed=True)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to cancel algo order {algo_id}: {e}")
+            return False
+
+    async def cancel_all_algo_orders(self, symbol: str) -> bool:
+        """Cancel all open algo orders for a symbol"""
+        params = {
+            'symbol': await self._normalize_symbol(symbol)
+        }
+        try:
+            await self._request('DELETE', '/fapi/v1/algo/allOpenOrders', params=params, signed=True)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to cancel all algo orders for {symbol}: {e}")
+            return False
+
     async def get_open_orders(self, symbol: str = None) -> list:
-        """Fetch open orders to verify SL/TP existence"""
+        """Fetch regular open orders (non-algo)"""
         params = {}
         if symbol:
             params['symbol'] = await self._normalize_symbol(symbol)
@@ -168,7 +249,7 @@ class BinanceFuturesAPI:
             return []
 
     async def cancel_order(self, symbol: str, order_id: int) -> bool:
-        """Cancel a specific order"""
+        """Cancel a specific regular order"""
         params = {
             'symbol': await self._normalize_symbol(symbol),
             'orderId': order_id
@@ -181,7 +262,7 @@ class BinanceFuturesAPI:
             return False
 
     async def cancel_all_open_orders(self, symbol: str) -> bool:
-        """Cancel all open orders for a symbol"""
+        """Cancel all regular open orders for a symbol"""
         params = {
             'symbol': await self._normalize_symbol(symbol)
         }

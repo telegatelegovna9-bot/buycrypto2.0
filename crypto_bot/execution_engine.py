@@ -223,16 +223,16 @@ class ExecutionEngine:
         position_size: float = None
     ) -> Optional[Dict]:
         """
-        Set stop loss order on Binance Futures using NATIVE API.
+        Set stop loss order on Binance Futures using NATIVE API with Algo Orders.
         
-        Uses direct Binance Futures API (fapi.binance.com) instead of CCXT
-        to avoid CCXT's limitations with STOP_MARKET orders.
+        Uses direct Binance Futures API (fapi.binance.com) with /fapi/v1/algo/order endpoint
+        as per https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
         
         Args:
-            symbol: Trading pair (e.g., 'BTC/USDT:USDT')
+            symbol: Trading pair (e.g., 'BLESS/USDT:USDT')
             side: 'buy' or 'sell' (opposite of position direction)
             stop_price: Trigger price for stop loss
-            position_size: Not used with closePosition=True, kept for compatibility
+            position_size: Amount to close (optional, will be fetched if not provided)
         
         Returns:
             Order dict if successful, None if failed
@@ -266,25 +266,27 @@ class ExecutionEngine:
             
             logger.info(f"[SL] {symbol}: Original={stop_price}, Formatted={stop_price_formatted}, Precision={precision}")
             
-            # Use NATIVE Binance API for STOP_MARKET order
-            logger.info(f"[SL NATIVE] Placing STOP_MARKET for {symbol}: Side={side}, StopPrice={stop_price_formatted}")
+            # Use NATIVE Binance API for STOP_LOSS algo order
+            logger.info(f"[SL NATIVE] Placing STOP_LOSS Algo Order for {symbol}: Side={side}, StopPrice={stop_price_formatted}, Qty={position_size}")
             
             order = await self.binance_api.place_stop_loss(
                 symbol=symbol,
                 side=side,
-                stop_price=stop_price_formatted
+                stop_price=stop_price_formatted,
+                position_size=position_size
             )
             
             # Store SL order reference
             self.sl_orders[symbol] = {
-                'order_id': order.get('orderId'),
-                'type': 'STOP_MARKET',
+                'algo_id': order.get('algoId'),
+                'order_id': order.get('orderList', [{}])[0].get('orderId') if order.get('orderList') else None,
+                'type': 'STOP_LOSS_ALGO',
                 'side': side,
                 'price': stop_price_formatted,
                 'timestamp': order.get('updateTime')
             }
             
-            logger.info(f"[SL SET] {symbol} {side.upper()} @ {stop_price_formatted} | OrderID={order.get('orderId')}")
+            logger.info(f"[SL SET] {symbol} {side.upper()} @ {stop_price_formatted} | AlgoID={order.get('algoId')}")
             
             return order
             
@@ -307,16 +309,16 @@ class ExecutionEngine:
         position_size: float = None
     ) -> Optional[Dict]:
         """
-        Set take profit order on Binance Futures using NATIVE API.
+        Set take profit order on Binance Futures using NATIVE API with Algo Orders.
         
-        Uses direct Binance Futures API (fapi.binance.com) instead of CCXT
-        to avoid CCXT's limitations with TAKE_PROFIT_MARKET orders.
+        Uses direct Binance Futures API (fapi.binance.com) with /fapi/v1/algo/order endpoint
+        as per https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
         
         Args:
-            symbol: Trading pair (e.g., 'BTC/USDT:USDT')
+            symbol: Trading pair (e.g., 'BLESS/USDT:USDT')
             side: 'buy' or 'sell' (opposite of position direction)
             take_profit_price: Trigger price for take profit
-            position_size: Not used with closePosition=True, kept for compatibility
+            position_size: Amount to close (optional, will be fetched if not provided)
         
         Returns:
             Order dict if successful, None if failed
@@ -350,25 +352,27 @@ class ExecutionEngine:
             
             logger.info(f"[TP] {symbol}: Original={take_profit_price}, Formatted={tp_price_formatted}, Precision={precision}")
             
-            # Use NATIVE Binance API for TAKE_PROFIT_MARKET order
-            logger.info(f"[TP NATIVE] Placing TAKE_PROFIT_MARKET for {symbol}: Side={side}, TP={tp_price_formatted}")
+            # Use NATIVE Binance API for TAKE_PROFIT algo order
+            logger.info(f"[TP NATIVE] Placing TAKE_PROFIT Algo Order for {symbol}: Side={side}, TP={tp_price_formatted}, Qty={position_size}")
             
             order = await self.binance_api.place_take_profit(
                 symbol=symbol,
                 side=side,
-                tp_price=tp_price_formatted
+                tp_price=tp_price_formatted,
+                position_size=position_size
             )
             
             # Store TP order reference
             self.tp_orders[symbol] = {
-                'order_id': order.get('orderId'),
-                'type': 'TAKE_PROFIT_MARKET',
+                'algo_id': order.get('algoId'),
+                'order_id': order.get('orderList', [{}])[0].get('orderId') if order.get('orderList') else None,
+                'type': 'TAKE_PROFIT_ALGO',
                 'side': side,
                 'price': tp_price_formatted,
                 'timestamp': order.get('updateTime')
             }
             
-            logger.info(f"[TP SET] {symbol} {side.upper()} @ {tp_price_formatted} | OrderID={order.get('orderId')}")
+            logger.info(f"[TP SET] {symbol} {side.upper()} @ {tp_price_formatted} | AlgoID={order.get('algoId')}")
             
             return order
             
@@ -559,7 +563,8 @@ class ExecutionEngine:
                 sl_order = await self.set_stop_loss(
                     symbol, 
                     sl_side, 
-                    stop_loss
+                    stop_loss,
+                    position_size=amount  # Pass position size for algo order
                 )
                 # SL is now set on exchange, will trigger automatically
             
@@ -569,7 +574,8 @@ class ExecutionEngine:
                 tp_order = await self.set_take_profit(
                     symbol, 
                     tp_side, 
-                    take_profit
+                    take_profit,
+                    position_size=amount  # Pass position size for algo order
                 )
                 # TP is now set on exchange, will trigger automatically
             
