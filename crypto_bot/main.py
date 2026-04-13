@@ -396,8 +396,26 @@ class TradingBot:
                 # Удаляем из активных сигналов
                 del self.active_signals[symbol]
             
-            # Уведомляем через Telegram
+            # Уведомляем через Telegram (always send final trade summary)
             if self.telegram.enabled:
+                last_trade = self.risk_manager.closed_trades[-1] if self.risk_manager.closed_trades else None
+                if last_trade:
+                    entry_price = last_trade.get('entry_price', 0.0)
+                    exit_price = last_trade.get('close_price', close_price)
+                    direction = last_trade.get('direction', 'long')
+                    pnl_pct = ((exit_price - entry_price) / entry_price) if direction == 'long' and entry_price > 0 else (
+                        (entry_price - exit_price) / entry_price if entry_price > 0 else 0.0
+                    )
+                    await self.telegram.notify_exit(
+                        symbol=symbol,
+                        direction=direction,
+                        entry_price=entry_price,
+                        exit_price=exit_price,
+                        pnl=pnl,
+                        pnl_pct=pnl_pct,
+                        reason=exit_reason,
+                        balance=self.risk_manager.balance
+                    )
                 if exit_reason == 'stop_loss':
                     await self.telegram.notify_stop_loss(symbol, pnl, self.risk_manager.balance)
                 elif exit_reason == 'take_profit':
@@ -409,36 +427,54 @@ class TradingBot:
             if not current_price:
                 continue
             
-            # Only manage positions that are still open (not closed in phase 2)
-            if position.unrealized_pnl > 0:
-                old_sl = position.stop_loss
-                old_tp = position.take_profit
+            old_sl = position.stop_loss
+            old_tp = position.take_profit
 
-                # Get ATR for adaptive exit logic
-                current_atr = None
-                try:
-                    df = await self.data_loader.fetch_ohlcv(symbol, self.current_timeframe, limit=50)
-                    if len(df) > 14:
-                        atr = calculate_atr(df, period=14)
-                        current_atr = float(atr.iloc[-1] if hasattr(atr, 'iloc') else atr)
-                except Exception as e:
-                    logger.debug(f"Error updating trailing stop for {symbol}: {e}")
-
-                self._apply_local_exit_strategy(position, current_price, current_atr)
-                if position.stop_loss != old_sl or position.take_profit != old_tp:
-                    logger.info(
-                        f"[EXIT STRATEGY] {symbol} | SL {old_sl:.6f}->{position.stop_loss:.6f} | "
-                        f"TP {old_tp:.6f}->{position.take_profit:.6f}"
+            # Get ATR + market context for adaptive exit logic
+            current_atr = None
+            market_bias = "neutral"
+            market_conf = 0.0
+            try:
+                df = await self.data_loader.fetch_ohlcv(symbol, self.current_timeframe, limit=80)
+                if len(df) > 14:
+                    atr = calculate_atr(df, period=14)
+                    current_atr = float(atr.iloc[-1] if hasattr(atr, 'iloc') else atr)
+                if len(df) > 50:
+                    meta_result = self.meta_controller.aggregate_signals(
+                        df,
+                        {'oi': [], 'funding_rate': 0.0, 'htf_trend': 'UP'}
                     )
+                    decision = meta_result.get('decision', {})
+                    market_bias = str(decision.get('direction', 'neutral')).lower()
+                    market_conf = float(decision.get('confidence', 0.0))
+            except Exception as e:
+                logger.debug(f"Error updating exit strategy for {symbol}: {e}")
 
-    def _apply_local_exit_strategy(self, position, current_price: float, atr: Optional[float]):
+            self._apply_local_exit_strategy(position, current_price, current_atr, market_bias, market_conf)
+            if position.stop_loss != old_sl or position.take_profit != old_tp:
+                logger.info(
+                    f"[EXIT STRATEGY] {symbol} | SL {old_sl:.6f}->{position.stop_loss:.6f} | "
+                    f"TP {old_tp:.6f}->{position.take_profit:.6f} | bias={market_bias}:{market_conf:.2f}"
+                )
+
+    def _apply_local_exit_strategy(
+        self,
+        position,
+        current_price: float,
+        atr: Optional[float],
+        market_bias: str,
+        market_conf: float
+    ):
         """
         Local exit strategy (no exchange SL/TP orders):
         1) Move SL to breakeven after +0.8%
         2) Trail SL with ATR after +1.5%
         3) Expand TP with ATR when trend continues
+        4) Use live strategy consensus (market_bias/market_conf) to tighten or relax exits
         """
         pnl_pct = position.get_pnl_pct(current_price)
+        aligned = (position.direction == market_bias and market_conf >= 0.55)
+        opposite = (market_bias in ['long', 'short'] and position.direction != market_bias and market_conf >= 0.55)
 
         # 1) Breakeven
         if pnl_pct >= 0.008:
@@ -452,18 +488,24 @@ class TradingBot:
 
         # 2) ATR trailing stop
         if pnl_pct >= 0.015:
+            trail_mult = 2.1 if aligned else 1.8
+            if opposite:
+                trail_mult = 1.2  # tighten if strategies turned against position
             if position.direction == 'long':
-                position.stop_loss = max(position.stop_loss, current_price - 1.8 * atr)
+                position.stop_loss = max(position.stop_loss, current_price - trail_mult * atr)
             else:
-                position.stop_loss = min(position.stop_loss, current_price + 1.8 * atr)
+                position.stop_loss = min(position.stop_loss, current_price + trail_mult * atr)
 
         # 3) Dynamic TP extension
+        tp_mult = 2.0 if aligned else 1.6
+        if opposite:
+            tp_mult = 0.8  # lock quicker profits if momentum weakens
         if position.direction == 'long':
-            dynamic_tp = max(position.take_profit, current_price + 1.6 * atr)
+            dynamic_tp = max(position.take_profit, current_price + tp_mult * atr)
             dynamic_tp = max(dynamic_tp, position.entry_price * 1.003)
             position.take_profit = dynamic_tp
         else:
-            dynamic_tp = min(position.take_profit, current_price - 1.6 * atr)
+            dynamic_tp = min(position.take_profit, current_price - tp_mult * atr)
             dynamic_tp = min(dynamic_tp, position.entry_price * 0.997)
             position.take_profit = dynamic_tp
     
