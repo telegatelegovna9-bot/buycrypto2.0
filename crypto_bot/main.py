@@ -67,6 +67,7 @@ class TradingBot:
         self.last_adaptation_time = datetime.now()
         self.adaptation_interval = timedelta(hours=6)
         self.last_screener_run = datetime.now()
+        self.last_analysis_time = datetime.min
         
         # Tracking
         self.active_signals: Dict[str, Dict] = {}
@@ -398,7 +399,7 @@ class TradingBot:
                 elif exit_reason == 'take_profit':
                     await self.telegram.notify_take_profit(symbol, pnl, self.risk_manager.balance)
         
-        # PHASE 3: Manage remaining active positions (trailing stop, breakeven)
+        # PHASE 3: Manage remaining active positions (trailing stop, breakeven, dynamic TP)
         for symbol, position in list(self.risk_manager.positions.items()):
             current_price = prices.get(symbol)
             if not current_price:
@@ -406,19 +407,53 @@ class TradingBot:
             
             # Only manage positions that are still open (not closed in phase 2)
             if position.unrealized_pnl > 0:
+                old_sl = position.stop_loss
+                old_tp = position.take_profit
+
                 # Move stop loss to breakeven when profitable
                 self.risk_manager.move_stop_loss_to_breakeven(symbol, current_price)
                 
                 # Trail stop loss using ATR
+                current_atr = None
                 try:
                     df = await self.data_loader.fetch_ohlcv(symbol, self.current_timeframe, limit=50)
                     if len(df) > 14:
                         atr = calculate_atr(df, period=14)
-                        current_atr = atr.iloc[-1] if hasattr(atr, 'iloc') else atr
+                        current_atr = float(atr.iloc[-1] if hasattr(atr, 'iloc') else atr)
                         self.risk_manager.trail_stop_loss(symbol, current_price, current_atr)
                         logger.debug(f"Updated trailing stop for {symbol}: SL={position.stop_loss:.4f}")
                 except Exception as e:
                     logger.debug(f"Error updating trailing stop for {symbol}: {e}")
+
+                # Dynamic TP: if momentum continues, shift TP further to capture more PnL
+                if current_atr and current_atr > 0:
+                    if position.direction == 'long':
+                        dynamic_tp = max(old_tp, current_price + current_atr * 1.5)
+                        dynamic_tp = max(dynamic_tp, position.entry_price * 1.002)
+                    else:
+                        dynamic_tp = min(old_tp, current_price - current_atr * 1.5)
+                        dynamic_tp = min(dynamic_tp, position.entry_price * 0.998)
+                    position.take_profit = dynamic_tp
+
+                # Sync updated protective orders to exchange server
+                if not self.config.exchange.sandbox:
+                    close_side = 'sell' if position.direction == 'long' else 'buy'
+                    if position.stop_loss != old_sl:
+                        updated_sl = await self.execution_engine.update_stop_loss(
+                            symbol, close_side, position.stop_loss
+                        )
+                        if updated_sl:
+                            logger.info(f"[SL UPDATE] {symbol}: {old_sl:.6f} -> {position.stop_loss:.6f}")
+                        else:
+                            position.stop_loss = old_sl
+                    if position.take_profit != old_tp:
+                        updated_tp = await self.execution_engine.update_take_profit(
+                            symbol, close_side, position.take_profit
+                        )
+                        if updated_tp:
+                            logger.info(f"[TP UPDATE] {symbol}: {old_tp:.6f} -> {position.take_profit:.6f}")
+                        else:
+                            position.take_profit = old_tp
     
     async def check_adaptation(self):
         """Check if strategies should be adapted."""
@@ -444,10 +479,13 @@ class TradingBot:
                 # Update screener if interval has passed (every 5 minutes)
                 await self.update_screener_if_needed()
                 
-                # Analyze markets and potentially open new positions
-                await self.analyze_and_trade()
+                # Analyze markets and potentially open new positions every 60s
+                now = datetime.now()
+                if (now - self.last_analysis_time).total_seconds() >= 60:
+                    await self.analyze_and_trade()
+                    self.last_analysis_time = now
                 
-                # Manage existing positions
+                # Manage existing positions every iteration (1 second)
                 await self.manage_positions()
                 
                 # Check for strategy adaptation
@@ -463,14 +501,14 @@ class TradingBot:
                 )
                 
                 # Wait before next iteration
-                await asyncio.sleep(60)  # 1 minute for faster reaction
+                await asyncio.sleep(1)
                 
             except KeyboardInterrupt:
                 logger.info("Interrupted by user")
                 break
             except Exception as e:
                 logger.error(f"Error in trading loop: {e}", exc_info=True)
-                await asyncio.sleep(60)  # Wait before retrying
+                await asyncio.sleep(1)  # Wait before retrying
         
         logger.info("Trading loop stopped")
     
