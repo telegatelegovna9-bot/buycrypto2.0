@@ -100,6 +100,31 @@ class MetaController:
                 self.strategy_weights[strategy_name] = max(0.1, self.strategy_weights[strategy_name] * 0.95)
                 logger.debug(f"Decreased weight for {strategy_name} to {self.strategy_weights[strategy_name]:.2f}")
 
+    def update_strategy_performance(self, strategy_name: str, pnl: float, is_winner: bool):
+        """
+        Backward-compatible alias used by TradingBot.
+        Updates strategy stats and adaptive weight.
+        """
+        self.update_weights(strategy_name=strategy_name, is_win=is_winner, pnl=pnl)
+
+    def adapt_strategy_weights(self):
+        """
+        Recalculate strategy weights periodically from historical stats.
+        Kept for compatibility with TradingBot.check_adaptation().
+        """
+        for name, stats in self.strategy_stats.items():
+            total_trades = stats["total_trades"]
+            if total_trades < 5:
+                continue
+
+            winrate = stats["wins"] / total_trades if total_trades > 0 else 0.0
+            avg_pnl = stats["total_pnl"] / total_trades
+
+            if winrate >= 0.6 and avg_pnl > 0:
+                self.strategy_weights[name] = min(2.0, self.strategy_weights[name] * 1.03)
+            elif winrate <= 0.4 or avg_pnl < 0:
+                self.strategy_weights[name] = max(0.1, self.strategy_weights[name] * 0.97)
+
     def get_active_strategies(self, regime: str) -> List[str]:
         """Get list of active strategies for current regime."""
         return self.regime_map.get(regime, ["MeanReversion", "LiquidityGrab"])
