@@ -1,6 +1,6 @@
 """
 Execution Engine: Handles order execution and position management.
-Uses exchange-side SL/TP orders (STOP_MARKET / TAKE_PROFIT_MARKET) for Binance Futures.
+Uses native Binance API for exchange-side SL/TP with algo endpoint fallback logic.
 """
 import ccxt.async_support as ccxt
 import asyncio
@@ -8,6 +8,7 @@ from typing import Dict, Optional, List
 import logging
 from strategies.base_strategy import Signal
 from risk_manager import Position
+from binance_native_api import BinanceFuturesAPI
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class ExecutionEngine:
         self.exchange_config = config.exchange
         
         self.exchange = None
+        self.binance_api = None
         self._initialized = False
         
         # Order tracking
@@ -34,7 +36,7 @@ class ExecutionEngine:
         self.tp_orders: Dict[str, Dict] = {}
     
     async def initialize(self):
-        """Initialize exchange connection."""
+        """Initialize exchange connection and native Binance client."""
         if not self._initialized:
             # Базовая конфигурация с корректировкой времени
             base_config = {
@@ -54,6 +56,11 @@ class ExecutionEngine:
                 base_config['proxy'] = self.exchange_config.proxy_url
             
             self.exchange = getattr(ccxt, self.exchange_config.exchange_id)(base_config)
+            self.binance_api = BinanceFuturesAPI(
+                api_key=self.exchange_config.api_key,
+                secret_key=self.exchange_config.api_secret
+            )
+            await self.binance_api.start_session()
             
             if self.exchange_config.sandbox:
                 self.exchange.set_sandbox_mode(True)
@@ -65,9 +72,11 @@ class ExecutionEngine:
             logger.info(f"Execution engine initialized on {self.exchange_config.exchange_id}")
     
     async def close(self):
-        """Close exchange connection."""
+        """Close exchange and native API sessions."""
         if self.exchange:
             await self.exchange.close()
+        if self.binance_api:
+            await self.binance_api.close_session()
         self._initialized = False
     
     async def get_balance(self) -> Dict:
@@ -212,7 +221,7 @@ class ExecutionEngine:
         position_size: float = None
     ) -> Optional[Dict]:
         """
-        Set stop loss on exchange server via STOP_MARKET + closePosition=True.
+        Set stop loss on exchange server via native Binance API.
         
         Args:
             symbol: Trading pair (e.g., 'BLESS/USDT:USDT')
@@ -235,22 +244,17 @@ class ExecutionEngine:
             
             await self.cancel_sl_tp_orders(symbol, order_type='sl')
 
-            order = await self.exchange.create_order(
+            order = await self.binance_api.place_stop_loss(
                 symbol=symbol,
-                type='STOP_MARKET',
                 side=side,
-                amount=None,
-                params={
-                    'stopPrice': stop_price_formatted,
-                    'closePosition': True,
-                    'workingType': 'MARK_PRICE',
-                    'positionSide': 'BOTH'
-                }
+                stop_price=stop_price_formatted,
+                position_size=position_size
             )
             
             self.sl_orders[symbol] = {
-                'id': order.get('id'),
-                'type': 'STOP_MARKET',
+                'id': order.get('orderId'),
+                'algo_id': order.get('algoId'),
+                'type': 'STOP_LOSS',
                 'side': side,
                 'price': stop_price_formatted
             }
@@ -272,7 +276,7 @@ class ExecutionEngine:
         position_size: float = None
     ) -> Optional[Dict]:
         """
-        Set take profit on exchange server via TAKE_PROFIT_MARKET + closePosition=True.
+        Set take profit on exchange server via native Binance API.
         
         Args:
             symbol: Trading pair (e.g., 'BLESS/USDT:USDT')
@@ -295,22 +299,17 @@ class ExecutionEngine:
             
             await self.cancel_sl_tp_orders(symbol, order_type='tp')
 
-            order = await self.exchange.create_order(
+            order = await self.binance_api.place_take_profit(
                 symbol=symbol,
-                type='TAKE_PROFIT_MARKET',
                 side=side,
-                amount=None,
-                params={
-                    'stopPrice': tp_price_formatted,
-                    'closePosition': True,
-                    'workingType': 'MARK_PRICE',
-                    'positionSide': 'BOTH'
-                }
+                tp_price=tp_price_formatted,
+                position_size=position_size
             )
             
             self.tp_orders[symbol] = {
-                'id': order.get('id'),
-                'type': 'TAKE_PROFIT_MARKET',
+                'id': order.get('orderId'),
+                'algo_id': order.get('algoId'),
+                'type': 'TAKE_PROFIT',
                 'side': side,
                 'price': tp_price_formatted
             }
@@ -332,18 +331,30 @@ class ExecutionEngine:
         try:
             if order_type in ['sl', 'all'] and symbol in self.sl_orders:
                 sl_id = self.sl_orders[symbol].get('id')
-                if sl_id:
+                sl_algo_id = self.sl_orders[symbol].get('algo_id')
+                if sl_algo_id and self.binance_api:
+                    await self.binance_api.cancel_algo_order(symbol, sl_algo_id)
+                elif sl_id:
                     try:
-                        await self.exchange.cancel_order(sl_id, symbol)
+                        if self.binance_api:
+                            await self.binance_api.cancel_order(symbol, sl_id)
+                        else:
+                            await self.exchange.cancel_order(sl_id, symbol)
                     except Exception as e:
                         logger.debug(f"[CANCEL SL] {symbol}: {e}")
                 self.sl_orders.pop(symbol, None)
 
             if order_type in ['tp', 'all'] and symbol in self.tp_orders:
                 tp_id = self.tp_orders[symbol].get('id')
-                if tp_id:
+                tp_algo_id = self.tp_orders[symbol].get('algo_id')
+                if tp_algo_id and self.binance_api:
+                    await self.binance_api.cancel_algo_order(symbol, tp_algo_id)
+                elif tp_id:
                     try:
-                        await self.exchange.cancel_order(tp_id, symbol)
+                        if self.binance_api:
+                            await self.binance_api.cancel_order(symbol, tp_id)
+                        else:
+                            await self.exchange.cancel_order(tp_id, symbol)
                     except Exception as e:
                         logger.debug(f"[CANCEL TP] {symbol}: {e}")
                 self.tp_orders.pop(symbol, None)
@@ -393,7 +404,7 @@ class ExecutionEngine:
             return 0.01
     
     async def cancel_all_orders(self, symbol: str):
-        """Cancel all open orders for a symbol using both CCXT and native API."""
+        """Cancel all open orders for a symbol using CCXT and native endpoints."""
         if not self._initialized:
             await self.initialize()
         
@@ -401,6 +412,11 @@ class ExecutionEngine:
             # Cancel via CCXT
             await self.exchange.cancel_all_orders(symbol)
             logger.info(f"[CCXT] Cancelled all orders for {symbol}")
+
+            if self.binance_api:
+                await self.binance_api.cancel_all_open_orders(symbol)
+                await self.binance_api.cancel_all_algo_orders(symbol)
+                logger.info(f"[NATIVE] Cancelled regular + algo orders for {symbol}")
             
             # Clear local tracking
             self.open_orders.pop(symbol, None)

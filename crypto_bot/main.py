@@ -485,8 +485,12 @@ class TradingBot:
                     await self.analyze_and_trade()
                     self.last_analysis_time = now
                 
-                # Manage existing positions every iteration (1 second)
-                await self.manage_positions()
+                # If there are open positions: manage each second.
+                # If no positions: manage only together with 60s analysis cadence.
+                if self.risk_manager.positions:
+                    await self.manage_positions()
+                elif (now - self.last_analysis_time).total_seconds() < 2:
+                    await self.manage_positions()
                 
                 # Check for strategy adaptation
                 await self.check_adaptation()

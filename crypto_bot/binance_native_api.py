@@ -140,34 +140,36 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[SL] Detected position size: {position_size} for {symbol}")
         
-        # For STOP_MARKET order to close position:
-        # - type: STOP_MARKET
-        # - side: SELL (for long), BUY (for short)
-        # - closePosition: true - automatically closes the entire position
-        # - stopPrice: Trigger price
-        # - workingType: MARK_PRICE - use mark price for triggering
-        params = {
+        algo_params = {
             'symbol': binance_symbol,
             'side': side.upper(),
-            'type': 'STOP_MARKET',
+            'algoType': 'STOP_LOSS',
             'stopPrice': stop_price,
-            'closePosition': 'true',
-            'workingType': 'MARK_PRICE',
-            'positionSide': 'BOTH',
-            'newOrderRespType': 'RESULT'
+            'quantity': position_size,
+            'reduceOnly': 'true',
+            'workingType': 'MARK_PRICE'
         }
         
-        logger.info(f"[NATIVE API] Placing SL STOP_MARKET for {symbol}: Side={side}, Stop={stop_price}, ClosePosition=true, BinanceSymbol={binance_symbol}")
-        logger.debug(f"[NATIVE API] SL Params: {params}")
-        
+        logger.info(f"[NATIVE API] Placing SL via /algo/order for {symbol}: Side={side}, Stop={stop_price}")
         try:
-            result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
-            order_id = result.get('orderId', 'N/A')
-            logger.info(f"[NATIVE API] SL Order placed successfully: OrderId={order_id}")
+            result = await self._request('POST', '/fapi/v1/algo/order', params=algo_params, signed=True)
+            logger.info(f"[NATIVE API] SL algo order placed: AlgoId={result.get('algoId')}")
             return result
-        except Exception as e:
-            logger.error(f"[NATIVE API] Failed to place SL: {e}")
-            raise
+        except Exception as algo_error:
+            logger.warning(f"[NATIVE API] /algo/order SL failed, fallback to /order: {algo_error}")
+            fallback_params = {
+                'symbol': binance_symbol,
+                'side': side.upper(),
+                'type': 'STOP_MARKET',
+                'stopPrice': stop_price,
+                'closePosition': 'true',
+                'workingType': 'MARK_PRICE',
+                'positionSide': 'BOTH',
+                'newOrderRespType': 'RESULT'
+            }
+            result = await self._request('POST', '/fapi/v1/order', params=fallback_params, signed=True)
+            logger.info(f"[NATIVE API] SL fallback order placed: OrderId={result.get('orderId')}")
+            return result
 
     async def place_take_profit(self, symbol: str, side: str, tp_price: float, position_size: float = None) -> Dict:
         """
@@ -183,34 +185,36 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[TP] Detected position size: {position_size} for {symbol}")
         
-        # For TAKE_PROFIT_MARKET order to close position:
-        # - type: TAKE_PROFIT_MARKET
-        # - side: SELL (for long), BUY (for short)
-        # - closePosition: true - automatically closes the entire position
-        # - stopPrice: Trigger price
-        # - workingType: MARK_PRICE - use mark price for triggering
-        params = {
+        algo_params = {
             'symbol': binance_symbol,
             'side': side.upper(),
-            'type': 'TAKE_PROFIT_MARKET',
+            'algoType': 'TAKE_PROFIT',
             'stopPrice': tp_price,
-            'closePosition': 'true',
-            'workingType': 'MARK_PRICE',
-            'positionSide': 'BOTH',
-            'newOrderRespType': 'RESULT'
+            'quantity': position_size,
+            'reduceOnly': 'true',
+            'workingType': 'MARK_PRICE'
         }
         
-        logger.info(f"[NATIVE API] Placing TP TAKE_PROFIT_MARKET for {symbol}: Side={side}, TP={tp_price}, ClosePosition=true, BinanceSymbol={binance_symbol}")
-        logger.debug(f"[NATIVE API] TP Params: {params}")
-        
+        logger.info(f"[NATIVE API] Placing TP via /algo/order for {symbol}: Side={side}, TP={tp_price}")
         try:
-            result = await self._request('POST', '/fapi/v1/order', params=params, signed=True)
-            order_id = result.get('orderId', 'N/A')
-            logger.info(f"[NATIVE API] TP Order placed successfully: OrderId={order_id}")
+            result = await self._request('POST', '/fapi/v1/algo/order', params=algo_params, signed=True)
+            logger.info(f"[NATIVE API] TP algo order placed: AlgoId={result.get('algoId')}")
             return result
-        except Exception as e:
-            logger.error(f"[NATIVE API] Failed to place TP: {e}")
-            raise
+        except Exception as algo_error:
+            logger.warning(f"[NATIVE API] /algo/order TP failed, fallback to /order: {algo_error}")
+            fallback_params = {
+                'symbol': binance_symbol,
+                'side': side.upper(),
+                'type': 'TAKE_PROFIT_MARKET',
+                'stopPrice': tp_price,
+                'closePosition': 'true',
+                'workingType': 'MARK_PRICE',
+                'positionSide': 'BOTH',
+                'newOrderRespType': 'RESULT'
+            }
+            result = await self._request('POST', '/fapi/v1/order', params=fallback_params, signed=True)
+            logger.info(f"[NATIVE API] TP fallback order placed: OrderId={result.get('orderId')}")
+            return result
 
     async def get_algo_orders(self, symbol: str = None) -> list:
         """Fetch open algo orders (including SL/TP)"""
