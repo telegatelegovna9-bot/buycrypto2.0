@@ -346,15 +346,15 @@ class TradingBot:
                 # Position was closed on exchange, now update local state
                 pos_data = self.risk_manager.positions.get(symbol)
                 if pos_data:
-                    # Calculate PnL
-                    if exit_reason == 'stop_loss':
-                        pnl = pos_data.size * (pos_data.stop_loss - pos_data.entry_price)
-                        if pos_data.direction == 'short':
-                            pnl = pos_data.size * (pos_data.entry_price - pos_data.stop_loss)
-                    else:  # take_profit
-                        pnl = pos_data.size * (pos_data.take_profit - pos_data.entry_price)
-                        if pos_data.direction == 'short':
-                            pnl = pos_data.size * (pos_data.entry_price - pos_data.take_profit)
+                    # Get entry price from position or active_signals
+                    entry_price = pos_data.entry_price
+                    direction = pos_data.direction
+                    
+                    # Calculate PnL correctly
+                    if direction == 'long':
+                        pnl = pos_data.size * (current_price - entry_price)
+                    else:  # short
+                        pnl = pos_data.size * (entry_price - current_price)
                     
                     # Close position locally
                     self.risk_manager.close_position(symbol, current_price, exit_reason)
@@ -377,15 +377,23 @@ class TradingBot:
                         
                         del self.active_signals[symbol]
                     
-                    # Send Telegram notification
+                    # Send FULL Telegram notification with all details
                     if self.telegram.enabled:
                         balance = self.risk_manager.balance
-                        if exit_reason == 'stop_loss':
-                            await self.telegram.notify_stop_loss(symbol, pnl, balance)
-                        elif exit_reason == 'take_profit':
-                            await self.telegram.notify_take_profit(symbol, pnl, balance)
+                        pnl_pct = pnl / (pos_data.size * entry_price) if entry_price > 0 else 0
+                        
+                        await self.telegram.notify_exit(
+                            symbol=symbol,
+                            direction=direction,
+                            entry_price=entry_price,
+                            exit_price=current_price,
+                            pnl=pnl,
+                            pnl_pct=pnl_pct,
+                            reason=exit_reason,
+                            balance=balance
+                        )
                     
-                    logger.info(f"Position closed: {symbol} | Reason: {exit_reason} | PnL: ${pnl:.2f}")
+                    logger.info(f"Position closed: {symbol} | Reason: {exit_reason} | PnL: ${pnl:.2f} ({pnl_pct:+.2%})")
     
     async def manage_positions(self):
         """

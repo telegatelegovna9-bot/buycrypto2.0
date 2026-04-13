@@ -255,28 +255,38 @@ class ExecutionEngine:
         
         exit_reason = None
         
-        # Check SL/TP based on direction
+        # Check SL/TP based on direction with proper comparison
         if direction == 'long':
+            # For LONG: SL is below entry, TP is above entry
+            # Close if price drops to/below SL OR rises to/above TP
             if current_price <= sl:
                 exit_reason = 'stop_loss'
+                logger.info(f"[CHECK] {symbol} LONG: SL HIT! Price={current_price:.6f} <= SL={sl:.6f}")
             elif current_price >= tp:
                 exit_reason = 'take_profit'
+                logger.info(f"[CHECK] {symbol} LONG: TP HIT! Price={current_price:.6f} >= TP={tp:.6f}")
         else:  # short
+            # For SHORT: SL is above entry, TP is below entry
+            # Close if price rises to/above SL OR drops to/below TP
             if current_price >= sl:
                 exit_reason = 'stop_loss'
+                logger.info(f"[CHECK] {symbol} SHORT: SL HIT! Price={current_price:.6f} >= SL={sl:.6f}")
             elif current_price <= tp:
                 exit_reason = 'take_profit'
+                logger.info(f"[CHECK] {symbol} SHORT: TP HIT! Price={current_price:.6f} <= TP={tp:.6f}")
         
         if exit_reason:
-            logger.info(f"[CHECK] {symbol}: {exit_reason.upper()} HIT! Price={current_price:.4f}, Level={sl if exit_reason == 'stop_loss' else tp:.4f}")
+            logger.warning(f"[CHECK] {symbol}: {exit_reason.upper()} TRIGGERED! Closing position...")
             # Close position on exchange
             close_price = await self.close_position(symbol)
             if close_price > 0:
-                logger.info(f"[CLOSE] {symbol} closed @ {close_price:.4f} due to {exit_reason}")
+                logger.info(f"[CLOSE] {symbol} closed @ {close_price:.6f} due to {exit_reason}")
                 self.unregister_position(symbol)
                 return exit_reason
             else:
-                logger.error(f"[CLOSE] Failed to close {symbol}")
+                logger.error(f"[CLOSE] Failed to close {symbol} - position may already be closed")
+                # Still unregister to avoid repeated attempts
+                self.unregister_position(symbol)
                 return None
         
         return None
