@@ -564,7 +564,7 @@ class ExecutionEngine:
                     symbol, 
                     sl_side, 
                     stop_loss,
-                    position_size=amount  # Pass position size for algo order
+                    position_size=position_size  # Pass position size for algo order
                 )
                 # SL is now set on exchange, will trigger automatically
             
@@ -575,7 +575,7 @@ class ExecutionEngine:
                     symbol, 
                     tp_side, 
                     take_profit,
-                    position_size=amount  # Pass position size for algo order
+                    position_size=position_size  # Pass position size for algo order
                 )
                 # TP is now set on exchange, will trigger automatically
             

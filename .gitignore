@@ -13,24 +13,17 @@ env/
 .env.local
 *.env.*
 
-# Logs
+# Logs and temp files
 *.log
+*.tmp
+*.swp
 
-# Coverage
-.coverage
-coverage/
-htmlcov/
-
-# IDE
+# Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
 # Build artifacts
 dist/
 build/
-*.o
-*.obj
-*.out
+target/
 ```

@@ -121,6 +121,11 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[SL] Detected position size: {position_size} for {symbol}")
         
+        # Format quantity according to exchange precision (use stepSize from LOT_SIZE filter)
+        # Most perpetual futures use integer quantities, but some like BTC allow decimals
+        # We'll format with up to 3 decimal places and strip trailing zeros
+        qty_str = f"{position_size:.3f}".rstrip('0').rstrip('.')
+        
         # For STOP_LOSS algo order:
         # - algoType: STOP_LOSS
         # - algoSubType: STOP_MARKET (for market order when triggered)
@@ -134,13 +139,13 @@ class BinanceFuturesAPI:
             'algoType': 'STOP_LOSS',
             'algoSubType': 'STOP_MARKET',
             'side': side.upper(),  # SELL for long position, BUY for short
-            'quantity': f"{position_size:.8f}".rstrip('0').rstrip('.'),
-            'stopPrice': f"{stop_price:.8f}".rstrip('0').rstrip('.'),
+            'quantity': qty_str,
+            'stopPrice': str(stop_price),
             'workingType': 'MARK_PRICE',
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing SL Algo Order for {symbol}: Side={side}, Stop={stop_price}, Qty={position_size}, BinanceSymbol={binance_symbol}")
+        logger.info(f"[NATIVE API] Placing SL Algo Order for {symbol}: Side={side}, Stop={stop_price}, Qty={qty_str}, BinanceSymbol={binance_symbol}")
         logger.debug(f"[NATIVE API] SL Params: {params}")
         
         try:
@@ -167,6 +172,11 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[TP] Detected position size: {position_size} for {symbol}")
         
+        # Format quantity according to exchange precision (use stepSize from LOT_SIZE filter)
+        # Most perpetual futures use integer quantities, but some like BTC allow decimals
+        # We'll format with up to 3 decimal places and strip trailing zeros
+        qty_str = f"{position_size:.3f}".rstrip('0').rstrip('.')
+        
         # For TAKE_PROFIT algo order:
         # - algoType: TAKE_PROFIT
         # - algoSubType: TAKE_PROFIT_MARKET (for market order when triggered)
@@ -180,13 +190,13 @@ class BinanceFuturesAPI:
             'algoType': 'TAKE_PROFIT',
             'algoSubType': 'TAKE_PROFIT_MARKET',
             'side': side.upper(),  # SELL for long position, BUY for short
-            'quantity': f"{position_size:.8f}".rstrip('0').rstrip('.'),
-            'stopPrice': f"{tp_price:.8f}".rstrip('0').rstrip('.'),
+            'quantity': qty_str,
+            'stopPrice': str(tp_price),
             'workingType': 'MARK_PRICE',
             'newOrderRespType': 'RESULT'
         }
         
-        logger.info(f"[NATIVE API] Placing TP Algo Order for {symbol}: Side={side}, TP={tp_price}, Qty={position_size}, BinanceSymbol={binance_symbol}")
+        logger.info(f"[NATIVE API] Placing TP Algo Order for {symbol}: Side={side}, TP={tp_price}, Qty={qty_str}, BinanceSymbol={binance_symbol}")
         logger.debug(f"[NATIVE API] TP Params: {params}")
         
         try:
