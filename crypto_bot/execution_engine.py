@@ -414,9 +414,9 @@ class ExecutionEngine:
             logger.info(f"[CCXT] Cancelled all orders for {symbol}")
 
             if self.binance_api:
-                await self.binance_api.cancel_all_open_orders(symbol)
-                await self.binance_api.cancel_all_algo_orders(symbol)
-                logger.info(f"[NATIVE] Cancelled regular + algo orders for {symbol}")
+                regular_ok = await self.binance_api.cancel_all_open_orders(symbol)
+                algo_ok = await self.binance_api.cancel_all_algo_orders(symbol)
+                logger.info(f"[NATIVE] cancel_all_open_orders={regular_ok}, cancel_all_algo_orders={algo_ok} for {symbol}")
             
             # Clear local tracking
             self.open_orders.pop(symbol, None)
@@ -492,7 +492,7 @@ class ExecutionEngine:
             
             if order:
                 close_price = order.get('average', order.get('price', 0.0))
-                logger.info(f"✓ SUCCESS: Closed {side.upper()} position on {symbol}: {amount} @ {close_price} ({close_side.upper()})")
+                logger.info(f"[CLOSE OK] Closed {side.upper()} position on {symbol}: {amount} @ {close_price} ({close_side.upper()})")
                 return close_price
             
             logger.error(f"Order returned None for {symbol}")

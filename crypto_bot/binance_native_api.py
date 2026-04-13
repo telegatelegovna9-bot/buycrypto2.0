@@ -22,7 +22,6 @@ class BinanceFuturesAPI:
         self.api_key = api_key
         self.secret_key = secret_key
         self.base_url = "https://fapi.binance.com"
-        self.algo_base_url = "https://api.binance.com"
         self.session: Optional[aiohttp.ClientSession] = None
         
     async def start_session(self):
@@ -167,10 +166,9 @@ class BinanceFuturesAPI:
         try:
             result = await self._request(
                 'POST',
-                '/sapi/v1/algo/futures/newOrder',
+                '/fapi/v1/algoOrder',
                 params=algo_params,
-                signed=True,
-                base_url=self.algo_base_url
+                signed=True
             )
             logger.info(f"[NATIVE API] SL algo order placed: AlgoId={result.get('algoId')}")
             return result
@@ -206,10 +204,9 @@ class BinanceFuturesAPI:
         try:
             result = await self._request(
                 'POST',
-                '/sapi/v1/algo/futures/newOrder',
+                '/fapi/v1/algoOrder',
                 params=algo_params,
-                signed=True,
-                base_url=self.algo_base_url
+                signed=True
             )
             logger.info(f"[NATIVE API] TP algo order placed: AlgoId={result.get('algoId')}")
             return result
@@ -226,10 +223,9 @@ class BinanceFuturesAPI:
         try:
             orders = await self._request(
                 'GET',
-                '/sapi/v1/algo/futures/openOrders',
+                '/fapi/v1/openAlgoOrders',
                 params=params,
-                signed=True,
-                base_url=self.algo_base_url
+                signed=True
             )
             return orders.get('data', [])
         except Exception as e:
@@ -245,10 +241,9 @@ class BinanceFuturesAPI:
         try:
             await self._request(
                 'DELETE',
-                '/sapi/v1/algo/futures/cancel',
+                '/fapi/v1/algoOrder',
                 params=params,
-                signed=True,
-                base_url=self.algo_base_url
+                signed=True
             )
             return True
         except Exception as e:
@@ -263,10 +258,9 @@ class BinanceFuturesAPI:
         try:
             await self._request(
                 'DELETE',
-                '/sapi/v1/algo/futures/cancelAllOpenOrders',
+                '/fapi/v1/algoOpenOrders',
                 params=params,
-                signed=True,
-                base_url=self.algo_base_url
+                signed=True
             )
             return True
         except Exception as e:

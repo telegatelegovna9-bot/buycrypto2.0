@@ -309,6 +309,10 @@ class TradingBot:
                             confidence=confidence,
                             balance=self.risk_manager.balance
                         )
+                    else:
+                        logger.error(f"Execution failed for {symbol}, removing local position to keep state consistent")
+                        self.risk_manager.positions.pop(symbol, None)
+                        continue
                 
                 # Track active signal
                 self.active_signals[symbol] = {
