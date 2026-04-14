@@ -15,6 +15,7 @@ from strategies.volume_spike import VolumeSpikeStrategy
 from strategies.liquidity_grab import LiquidityGrabStrategy
 from strategies.mean_reversion import MeanReversionStrategy
 from strategies.momentum import MomentumStrategy
+from strategies.volume_oi_strategies import VolumeStrategy, OpenInterestStrategy
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,8 @@ class MetaController:
             LiquidityGrabStrategy({'lookback_period': 10, 'min_shadow_ratio': 2.0}),
             MeanReversionStrategy({'rsi_period': 14, 'bb_window': 20}),
             MomentumStrategy({'momentum_period': 5, 'min_momentum': 0.02}),
+            VolumeStrategy({'volume_ma_period': 20, 'volume_spike_threshold': 2.0}),
+            OpenInterestStrategy({'oi_ma_period': 20, 'oi_change_threshold': 0.15}),
         ]
         
         # Initial equal weights for all strategies

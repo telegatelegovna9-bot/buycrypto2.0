@@ -114,7 +114,10 @@ class PositionMonitor:
         
         # Fetch current prices for ALL positions
         prices = {}
-        for symbol in self.risk_manager.positions.keys():
+        # Create a copy of keys to avoid "dictionary changed size during iteration" error
+        symbols = list(self.risk_manager.positions.keys())
+        
+        for symbol in symbols:
             try:
                 ticker = await self.data_loader.fetch_ticker(symbol)
                 if ticker and 'last' in ticker:
