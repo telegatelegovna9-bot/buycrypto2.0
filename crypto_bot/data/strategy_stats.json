@@ -1,0 +1,48 @@
+{
+  "strategy_stats": {
+    "TrendBreakout": {
+      "wins": 13,
+      "losses": 18,
+      "total_pnl": 848.14089769552,
+      "total_trades": 31
+    },
+    "VolatilityBreakout": {
+      "wins": 0,
+      "losses": 0,
+      "total_pnl": 0.0,
+      "total_trades": 0
+    },
+    "VolumeSpike": {
+      "wins": 0,
+      "losses": 0,
+      "total_pnl": 0.0,
+      "total_trades": 0
+    },
+    "LiquidityGrab": {
+      "wins": 0,
+      "losses": 1,
+      "total_pnl": -0.24951743999999942,
+      "total_trades": 1
+    },
+    "MeanReversion": {
+      "wins": 0,
+      "losses": 2,
+      "total_pnl": -0.376674799999998,
+      "total_trades": 2
+    },
+    "Momentum": {
+      "wins": 1,
+      "losses": 0,
+      "total_pnl": 80.0,
+      "total_trades": 1
+    }
+  },
+  "strategy_weights": {
+    "TrendBreakout": 1.9799315994393987,
+    "VolatilityBreakout": 1.0,
+    "VolumeSpike": 1.0,
+    "LiquidityGrab": 1.0,
+    "MeanReversion": 1.0,
+    "Momentum": 1.0
+  }
+}
