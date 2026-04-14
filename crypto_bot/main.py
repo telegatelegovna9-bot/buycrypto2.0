@@ -229,7 +229,21 @@ class TradingBot:
             
             direction = decision['direction']
             confidence = decision.get('confidence', 0.0)
-            source_strategy = decision.get('source', 'Unknown')
+            # FIX: Получаем список стратегий из правильного ключа 'source_strategies'
+            source_strategies = decision.get('source_strategies', [])
+            # Если список пуст, пробуем старый ключ 'source' для совместимости
+            if not source_strategies:
+                single_source = decision.get('source', None)
+                if single_source and single_source != 'Unknown':
+                    source_strategies = [single_source]
+            
+            # Для логирования берем первую стратегию или "Multi" если их несколько
+            if len(source_strategies) == 1:
+                source_strategy = source_strategies[0]
+            elif len(source_strategies) > 1:
+                source_strategy = f"Multi({len(source_strategies)})"
+            else:
+                source_strategy = 'Unknown'
             
             # Safe logging for symbols with non-ASCII characters
             try:
@@ -319,12 +333,12 @@ class TradingBot:
                         self.risk_manager.positions.pop(symbol, None)
                         continue
                 
-                # Track active signal
+                # Track active signal with FULL strategy list
                 self.active_signals[symbol] = {
                     'signal': {'direction': direction, 'entry': current_price, 'confidence': confidence},
                     'position': position,
                     'entry_time': datetime.now(),
-                    'strategy': source_strategy
+                    'strategy': source_strategies if len(source_strategies) > 1 else (source_strategies[0] if source_strategies else 'Unknown')
                 }
     
     async def manage_positions(self):
@@ -381,22 +395,29 @@ class TradingBot:
             # Закрываем позицию локально
             pnl = self.risk_manager.close_position(symbol, close_price, exit_reason)
             
-            # Определяем, какие стратегии были задействованы
+            # Определяем, какие стратегии были задействованы - УЛУЧШЕННАЯ ВЕРСИЯ
             strategies_used = []
             if symbol in self.active_signals:
                 strategy_val = self.active_signals[symbol].get('strategy', None)
-                if strategy_val and strategy_val != 'Unknown':
+                
+                # FIX: Обрабатываем все варианты: список, строка, None
+                if strategy_val:
                     if isinstance(strategy_val, list):
-                        strategies_used = strategy_val
-                    else:
+                        # Фильтруем 'Unknown' из списка
+                        strategies_used = [s for s in strategy_val if s and s != 'Unknown']
+                    elif isinstance(strategy_val, str) and strategy_val != 'Unknown':
                         strategies_used = [strategy_val]
-                else:
-                    # Пытаемся получить стратегию из position объекта если есть
+                
+                # Если все еще пусто, пробуем получить из position объекта
+                if not strategies_used:
                     position_obj = self.active_signals[symbol].get('position')
                     if position_obj and hasattr(position_obj, 'strategy'):
                         strat = position_obj.strategy
-                        if strat and strat != 'Unknown':
-                            strategies_used = [strat] if not isinstance(strat, list) else strat
+                        if strat:
+                            if isinstance(strat, list):
+                                strategies_used = [s for s in strat if s and s != 'Unknown']
+                            elif isinstance(strat, str) and strat != 'Unknown':
+                                strategies_used = [strat]
                 
                 # Обновляем производительность стратегий
                 is_winner = pnl > 0
@@ -416,11 +437,14 @@ class TradingBot:
                             default_strategy, pnl, is_winner, exit_reason
                         )
                         logger.warning(f"[STATS WARNING] No strategy found for {symbol}, using {default_strategy}: PnL={pnl:.2f}, Win={is_winner}")
-                
+                    else:
+                        logger.error(f"[STATS ERROR] Cannot determine strategy for {symbol}, stats NOT updated")
+
                 # Удаляем из активных сигналов
                 del self.active_signals[symbol]
             else:
                 logger.warning(f"[STATS WARNING] No active signal found for closed position {symbol}")
+
             
             # Уведомляем через Telegram (always send final trade summary)
             if self.telegram.enabled:
