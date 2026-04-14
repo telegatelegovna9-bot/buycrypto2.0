@@ -428,6 +428,10 @@ class TradingBot:
                 logger.warning(f"[FALLBACK] {symbol} triggered {exit_reason} - PositionMonitor may have missed it")
                 positions_to_close.append((symbol, current_price, exit_reason))
         
+        # Execute closures for positions that hit SL/TP
+        for symbol, close_price, exit_reason in positions_to_close:
+            await self._execute_position_closure(symbol, close_price, exit_reason)
+        
     async def _execute_position_closure(self, symbol: str, close_price: float, exit_reason: str):
         """
         Execute position closure on exchange and locally.

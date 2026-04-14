@@ -90,7 +90,16 @@ class PositionMonitor:
         """Main monitoring loop - runs every 1 second."""
         while self.monitoring_active:
             try:
-                await self._check_all_positions()
+                positions_to_close = await self._check_all_positions()
+                
+                # Execute closures for positions that hit SL/TP
+                if positions_to_close:
+                    for symbol, close_price, exit_reason in positions_to_close:
+                        # Get position object before closing
+                        position = self.risk_manager.positions.get(symbol)
+                        if position:
+                            await self._execute_sl_tp_closure(symbol, position, close_price, exit_reason)
+                
                 await asyncio.sleep(self.monitor_interval)
             except asyncio.CancelledError:
                 break
@@ -795,6 +804,56 @@ class PositionMonitor:
                 f"PnL: {position.get_pnl_pct(current_price):+.2%} | "
                 f"Причина: {decision['reasons'][-1]}"
             )
+    
+    async def _execute_sl_tp_closure(
+        self,
+        symbol: str,
+        position,
+        close_price: float,
+        exit_reason: str
+    ):
+        """
+        Execute closure when SL or TP is hit.
+        Closes position on exchange and updates local state.
+        """
+        logger.critical(f"[SL/TP HIT] {symbol}: {exit_reason} @ {close_price}")
+        
+        try:
+            # Close on exchange (in live mode)
+            if not self.config.exchange.sandbox:
+                close_price_exchange = await self.order_executor.close_position(symbol)
+                if close_price_exchange > 0:
+                    close_price = close_price_exchange
+                    logger.critical(f"[CLOSE OK] {symbol} closed on exchange @ {close_price_exchange}")
+                else:
+                    logger.error(f"[CLOSE FAIL] Failed to close {symbol} on exchange")
+                    return
+            
+            # Close locally in risk manager
+            pnl = self.risk_manager.close_position(symbol, close_price, exit_reason)
+            
+            # Update strategy stats
+            if symbol in self.risk_manager.closed_trades and self.risk_manager.closed_trades:
+                last_trade = self.risk_manager.closed_trades[-1]
+                is_winner = pnl > 0
+                
+                # Get strategy from active signals if available
+                strategies_used = []
+                # Note: We don't have direct access to active_signals here
+                # The main loop will handle strategy stats update
+                
+                logger.info(f"[STATS] {symbol} closed: PnL={pnl:.2f}, Win={is_winner}, Reason={exit_reason}")
+            
+            # Remove from tracking
+            if symbol in self.position_states:
+                del self.position_states[symbol]
+            if symbol in self.highest_price:
+                del self.highest_price[symbol]
+            if symbol in self.lowest_price:
+                del self.lowest_price[symbol]
+                
+        except Exception as e:
+            logger.error(f"[SL/TP CLOSE ERROR] {symbol}: {e}", exc_info=True)
     
     async def _check_partial_close(
         self,
