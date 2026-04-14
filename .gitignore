@@ -1,1 +1,1 @@
-Nothing needs to be added to the .gitignore file since only Python source files (.py) were modified and no build artifacts, dependencies, or temporary files were detected in the changes.
+Nothing should be ignored based on the provided file changes. The only modified file is a Python source file (`crypto_bot/main.py`), which should not be added to .gitignore. There are no build artifacts, dependencies, or temporary files in the change list that require ignoring.
