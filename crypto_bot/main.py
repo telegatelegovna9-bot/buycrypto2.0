@@ -94,6 +94,9 @@ class TradingBot:
         await self.position_monitor.start_monitoring()
         logger.info("Position Monitor initialized and started")
         
+        # CRITICAL: Sync positions from exchange to recover open positions after restart
+        await self.sync_positions_from_exchange()
+        
         # Auto-select trading pairs if symbols list is empty
         if not self.config.symbols:
             logger.info("No trading symbols configured. Running pairs screener...")
@@ -118,6 +121,159 @@ class TradingBot:
         logger.info(f"Initial timeframe selected: {self.current_timeframe}")
         
         logger.info("Trading bot initialized successfully")
+    
+    async def sync_positions_from_exchange(self):
+        """
+        CRITICAL: Sync open positions from exchange to local state.
+        
+        This solves two major problems:
+        1. Bot restart: If bot was restarted with open positions, it will recover them
+        2. Manual close: If position was closed on exchange but not in bot, it will be removed
+        
+        This ensures the bot always has accurate position data.
+        """
+        logger.info("[SYNC] Checking for open positions on exchange...")
+        
+        try:
+            # Fetch all positions from exchange
+            all_positions = await self.execution_engine.exchange.fetch_positions()
+            
+            recovered_count = 0
+            removed_count = 0
+            
+            # Create a set of symbols that have open positions on exchange
+            exchange_positions = {}
+            
+            for pos in all_positions:
+                contracts = float(pos.get('contracts', 0))
+                symbol = pos.get('symbol')
+                
+                # Skip if no position or zero contracts
+                if contracts == 0:
+                    continue
+                
+                # Determine position direction
+                side = str(pos.get('side', '')).lower()
+                raw_amt = float(pos.get('info', {}).get('positionAmt', 0) or 0)
+                
+                if raw_amt > 0 or side == 'long':
+                    direction = 'long'
+                elif raw_amt < 0 or side == 'short':
+                    direction = 'short'
+                else:
+                    continue  # Skip unknown direction
+                
+                # Get current price
+                entry_price = float(pos.get('entryPrice', 0))
+                current_price = float(pos.get('markPrice', entry_price))
+                
+                exchange_positions[symbol] = {
+                    'direction': direction,
+                    'contracts': abs(contracts),
+                    'entry_price': entry_price,
+                    'current_price': current_price,
+                    'leverage': int(pos.get('leverage', 1)),
+                    'exchange_data': pos
+                }
+            
+            # Check each exchange position against local state
+            for symbol, ex_pos in exchange_positions.items():
+                if symbol not in self.risk_manager.positions:
+                    # Position exists on exchange but not locally - RECOVER IT
+                    logger.warning(
+                        f"[SYNC RECOVER] Found open {ex_pos['direction']} position on exchange "
+                        f"for {symbol} ({ex_pos['contracts']} contracts @ {ex_pos['entry_price']:.4f}) "
+                        f"that was not tracked locally. Recovering..."
+                    )
+                    
+                    # Calculate approximate SL/TP (will be refined by PositionMonitor)
+                    if ex_pos['direction'] == 'long':
+                        sl = ex_pos['entry_price'] * 0.98  # Approximate 2% SL
+                        tp = ex_pos['entry_price'] * 1.04  # Approximate 4% TP
+                    else:
+                        sl = ex_pos['entry_price'] * 1.02
+                        tp = ex_pos['entry_price'] * 0.96
+                    
+                    # Create position object
+                    position = self.risk_manager.create_position(
+                        symbol=symbol,
+                        direction=ex_pos['direction'],
+                        entry_price=ex_pos['entry_price'],
+                        stop_loss=sl,
+                        take_profit=tp,
+                        confidence=0.5,  # Unknown confidence
+                        market_info={}
+                    )
+                    
+                    if position:
+                        # Adjust size to match exchange
+                        position.size = ex_pos['contracts']
+                        position.leverage = ex_pos['leverage']
+                        
+                        # Update PnL with current price
+                        position.update_unrealized_pnl(ex_pos['current_price'])
+                        
+                        # Add to active signals for tracking
+                        self.active_signals[symbol] = {
+                            'signal': {
+                                'direction': ex_pos['direction'],
+                                'entry': ex_pos['entry_price'],
+                                'confidence': 0.5
+                            },
+                            'position': position,
+                            'entry_time': datetime.now(),
+                            'strategy': 'Recovered'
+                        }
+                        
+                        recovered_count += 1
+                        logger.info(f"[SYNC OK] Recovered position: {symbol}")
+                else:
+                    # Position exists both locally and on exchange - verify consistency
+                    local_pos = self.risk_manager.positions[symbol]
+                    if abs(local_pos.size - ex_pos['contracts']) > 0.01:
+                        logger.warning(
+                            f"[SYNC MISMATCH] {symbol}: Local size={local_pos.size}, "
+                            f"Exchange size={ex_pos['contracts']}. Updating local..."
+                        )
+                        local_pos.size = ex_pos['contracts']
+            
+            # Check for positions that exist locally but NOT on exchange (manually closed or liquidated)
+            symbols_to_remove = []
+            for symbol in list(self.risk_manager.positions.keys()):
+                if symbol not in exchange_positions:
+                    logger.warning(
+                        f"[SYNC REMOVE] Position {symbol} exists locally but NOT on exchange. "
+                        f"It was likely closed manually or liquidated. Removing from local state..."
+                    )
+                    symbols_to_remove.append(symbol)
+                    removed_count += 1
+            
+            # Remove stale positions
+            for symbol in symbols_to_remove:
+                # Remove from risk manager
+                self.risk_manager.positions.pop(symbol, None)
+                # Remove from active signals
+                self.active_signals.pop(symbol, None)
+                # Remove from position monitor states
+                if self.position_monitor and symbol in self.position_monitor.position_states:
+                    self.position_monitor.position_states.pop(symbol, None)
+            
+            # Summary
+            if recovered_count > 0:
+                logger.critical(f"[SYNC COMPLETE] Recovered {recovered_count} open positions from exchange")
+            if removed_count > 0:
+                logger.critical(f"[SYNC COMPLETE] Removed {removed_count} stale positions (not on exchange)")
+            if recovered_count == 0 and removed_count == 0:
+                logger.info("[SYNC COMPLETE] All positions synchronized correctly")
+            
+            # Sync balance after position recovery
+            if not self.config.exchange.sandbox:
+                logger.info("[SYNC] Updating balance after position sync...")
+                await self.risk_manager.sync_balance_from_exchange(self.execution_engine)
+            
+        except Exception as e:
+            logger.error(f"[SYNC ERROR] Failed to sync positions from exchange: {e}", exc_info=True)
+            logger.warning("[SYNC WARNING] Continuing with local position state (may be outdated)")
     
     async def shutdown(self):
         """Gracefully shutdown the bot."""
