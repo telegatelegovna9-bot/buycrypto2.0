@@ -384,25 +384,43 @@ class TradingBot:
             # Определяем, какие стратегии были задействованы
             strategies_used = []
             if symbol in self.active_signals:
-                strategy_val = self.active_signals[symbol].get('strategy', [])
-                if isinstance(strategy_val, list):
-                    strategies_used = strategy_val
-                elif strategy_val:
-                    strategies_used = [strategy_val]
+                strategy_val = self.active_signals[symbol].get('strategy', None)
+                if strategy_val and strategy_val != 'Unknown':
+                    if isinstance(strategy_val, list):
+                        strategies_used = strategy_val
+                    else:
+                        strategies_used = [strategy_val]
+                else:
+                    # Пытаемся получить стратегию из position объекта если есть
+                    position_obj = self.active_signals[symbol].get('position')
+                    if position_obj and hasattr(position_obj, 'strategy'):
+                        strat = position_obj.strategy
+                        if strat and strat != 'Unknown':
+                            strategies_used = [strat] if not isinstance(strat, list) else strat
                 
                 # Обновляем производительность стратегий
                 is_winner = pnl > 0
-                for strategy_name in strategies_used:
-                    if strategy_name:
+                if strategies_used:
+                    for strategy_name in strategies_used:
+                        if strategy_name and strategy_name != 'Unknown':
+                            self.meta_controller.update_strategy_performance(
+                                strategy_name, pnl, is_winner, exit_reason
+                            )
+                            logger.info(f"[STATS UPDATED] {strategy_name}: PnL={pnl:.2f}, Win={is_winner}, Reason={exit_reason}")
+                else:
+                    # Если стратегия не найдена, используем дефолтное имя на основе направления
+                    position_obj = self.risk_manager.positions.get(symbol) if symbol in self.risk_manager.positions else None
+                    if position_obj:
+                        default_strategy = f"Default_{position_obj.direction}"
                         self.meta_controller.update_strategy_performance(
-                            strategy_name, pnl, is_winner, exit_reason
+                            default_strategy, pnl, is_winner, exit_reason
                         )
-                        logger.info(f"[STATS UPDATED] {strategy_name}: PnL={pnl:.2f}, Win={is_winner}, Reason={exit_reason}")
+                        logger.warning(f"[STATS WARNING] No strategy found for {symbol}, using {default_strategy}: PnL={pnl:.2f}, Win={is_winner}")
                 
                 # Удаляем из активных сигналов
                 del self.active_signals[symbol]
             else:
-                logger.warning(f"[STATS WARNING] No strategy found for closed position {symbol}")
+                logger.warning(f"[STATS WARNING] No active signal found for closed position {symbol}")
             
             # Уведомляем через Telegram (always send final trade summary)
             if self.telegram.enabled:

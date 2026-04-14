@@ -1,68 +1,57 @@
+# Dependencies
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
 # Environment
 .env
 .env.local
-*.env.*
-
-# Dependencies
-node_modules/
-.venv/
-venv/
-__pycache__/
-.mypy_cache/
-.pytest_cache/
-dist/
-build/
-target/
-.gradle/
-
-# Compiled files
-*.pyc
-*.class
-*.o
-*.exe
-*.dll
-*.so
-*.a
-*.obj
-*.out
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
+.env.*
 
 # Logs
 *.log
 
-# System
-.DS_Store
-Thumbs.db
+# Coverage
+.coverage
 coverage/
 htmlcov/
-.coverage
 
-# Compressed files
-*.zip
-*.gz
-*.tar
-*.tgz
-*.bz2
-*.xz
-*.7z
-*.rar
-*.zst
-*.lz4
-*.lzh
-*.cab
-*.arj
-*.rpm
-*.deb
-*.Z
-*.lz
-*.lzo
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Temp files
+*.tmp
+*.temp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.tox/
+.coverage*
+
+# Distribution / packaging
 *.tar.gz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
+*.whl
+*.egg
+
+# Local configuration
+.settings/
+nbproject/
