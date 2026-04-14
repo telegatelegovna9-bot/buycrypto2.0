@@ -167,12 +167,22 @@ class TradingBot:
                 entry_price = float(pos.get('entryPrice', 0))
                 current_price = float(pos.get('markPrice', entry_price))
                 
+                # Safe leverage parsing (handle None, string, or missing values)
+                raw_leverage = pos.get('leverage')
+                if raw_leverage is None:
+                    leverage = 1
+                else:
+                    try:
+                        leverage = int(raw_leverage)
+                    except (ValueError, TypeError):
+                        leverage = 1
+                
                 exchange_positions[symbol] = {
                     'direction': direction,
                     'contracts': abs(contracts),
                     'entry_price': entry_price,
                     'current_price': current_price,
-                    'leverage': int(pos.get('leverage', 1)),
+                    'leverage': leverage,
                     'exchange_data': pos
                 }
             
