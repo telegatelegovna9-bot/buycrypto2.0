@@ -1,10 +1,10 @@
 {
   "strategy_stats": {
     "TrendBreakout": {
-      "wins": 8,
+      "wins": 9,
       "losses": 1,
-      "total_pnl": 800.0,
-      "total_trades": 9
+      "total_pnl": 850.0,
+      "total_trades": 10
     },
     "VolatilityBreakout": {
       "wins": 0,
@@ -38,7 +38,7 @@
     }
   },
   "strategy_weights": {
-    "TrendBreakout": 1.2762815625000004,
+    "TrendBreakout": 1.3400956406250004,
     "VolatilityBreakout": 1.0,
     "VolumeSpike": 1.0,
     "LiquidityGrab": 1.0,
