@@ -111,6 +111,11 @@ class TradingBot:
         
         self.is_running = False
         
+        # Save strategy stats before shutting down
+        if hasattr(self.meta_controller, '_save_strategy_stats'):
+            self.meta_controller._save_strategy_stats()
+            logger.info("Strategy stats saved successfully")
+        
         await self.data_loader.close()
         await self.execution_engine.close()
         
@@ -517,6 +522,10 @@ class TradingBot:
             logger.info("Running strategy adaptation...")
             self.meta_controller.adapt_strategy_weights()
             self.last_adaptation_time = now
+            
+            # Save stats after adaptation
+            self.meta_controller._save_strategy_stats()
+            logger.info("Strategy stats saved after adaptation")
     
     async def run_loop(self):
         """Main trading loop."""
