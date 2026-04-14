@@ -5,50 +5,28 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Data files (if they are generated/intermediate)
-*.json
-
-# Logs
-*.log
-
-# Environment
+# Dependencies
+.venv/
+venv/
+env/
 .env
 .env.local
 *.env.*
 
-# Dependencies
-.venv/
-venv/
-.env/
+# Tests and coverage
+.coverage
+htmlcov/
+coverage/
 
-# Editors
-.vscode/
-.idea/
+# Logs
+*.log
+
+# Temporary files
+*.tmp
 *.swp
 *.swo
 
-# OS
+# OS generated files
 .DS_Store
 Thumbs.db
-
-# Coverage
-.coverage
-coverage/
-htmlcov/
-
-# Build artifacts
-dist/
-build/
-target/
-*.o
-*.obj
-*.out
-*.exe
-*.dll
-*.so
-*.a
-
-# Testing
-.pytest_cache/
-.mypy_cache/
 ```
