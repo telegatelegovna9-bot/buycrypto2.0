@@ -8,6 +8,7 @@ from typing import Dict, Optional, List
 from dataclasses import dataclass
 import logging
 from datetime import datetime
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -331,97 +332,436 @@ class PositionMonitor:
         pnl_pct: float
     ):
         """
-        NEW FEATURE: Dynamic TP management when price exceeds original TP.
+        УМНОЕ управление TP с использованием индикаторов в реальном времени.
         
-        When price moves significantly above TP:
-        1. Extend TP to capture more profit (if momentum strong)
-        2. Switch to aggressive trailing (tighter ATR multiplier)
-        3. Log the opportunity for analysis
+        ПРИОРИТЕТ 1: Когда цена достигает TP → СРАЗУ ставим SL на уровень TP
+        ПРИОРИТЕТ 2: Анализируем индикаторы (RSI, MACD, Volume) для решения
+        ПРИОРИТЕТ 3: Если тренд сильный → двигаем TP дальше и используем trailing
+        ПРИОРИТЕТ 4: Если дивергенция/слабость → закрываем часть или всю позицию
         
-        This prevents leaving money on the table when price pumps hard.
+        Это решает проблему "монета дошла до TP, а бот не закрыл, потом откат и стоп".
         """
-        # Check if we're above original TP
+        # Определяем направление и процент превышения TP
         tp_hit = False
-        if position.direction == 'long' and current_price >= position.take_profit:
-            tp_hit = True
-            excess_pct = (current_price - position.take_profit) / position.take_profit
-        elif position.direction == 'short' and current_price <= position.take_profit:
-            tp_hit = True
-            excess_pct = (position.take_profit - current_price) / position.take_profit
-        else:
-            return  # Not above TP yet
+        excess_pct = 0.0
         
-        # Only act if significantly above TP (>1% beyond TP)
-        if excess_pct < 0.01:
+        if position.direction == 'long':
+            if current_price >= position.take_profit:
+                tp_hit = True
+                excess_pct = (current_price - position.take_profit) / position.take_profit
+        else:  # short
+            if current_price <= position.take_profit:
+                tp_hit = True
+                excess_pct = (position.take_profit - current_price) / position.take_profit
+        
+        if not tp_hit:
+            return  # Цена еще не достигла TP
+        
+        # ============================================
+        # ШАГ 1: СРАЗУ ставим SL на уровень TP (защита прибыли)
+        # ============================================
+        await self._secure_profit_at_tp(symbol, position, current_price)
+        
+        # ============================================
+        # ШАГ 2: Получаем индикаторы для анализа
+        # ============================================
+        indicators = await self._fetch_realtime_indicators(symbol)
+        if not indicators:
+            logger.warning(f"[DYNAMIC TP] Не удалось получить индикаторы для {symbol}")
             return
         
-        logger.info(
-            f"[DYNAMIC TP] {symbol} is {excess_pct*100:.2f}% above TP! "
-            f"Original TP: {position.take_profit:.4f}, Current: {current_price:.4f}"
+        # ============================================
+        # ШАГ 3: Принятие решения на основе индикаторов
+        # ============================================
+        decision = await self._analyze_exit_decision(
+            symbol, position, current_price, pnl_pct, excess_pct, indicators
         )
         
-        # Strategy 1: Aggressive trailing when above TP
-        # Use tighter ATR multiplier (1.5x instead of 2.5x) to lock in profits
-        if pnl_pct >= 0.05:  # If >5% profit
+        # ============================================
+        # ШАГ 4: Выполнение решения
+        # ============================================
+        await self._execute_exit_decision(symbol, position, decision, current_price)
+    
+    async def _secure_profit_at_tp(self, symbol: str, position, current_price: float):
+        """
+        КРИТИЧЕСКИ ВАЖНО: Сразу ставит SL на уровень TP когда цена его достигает.
+        Это гарантирует что мы не потеряем прибыль при откате.
+        """
+        # Проверяем, нужно ли двигать SL
+        should_move_sl = False
+        new_sl = None
+        
+        if position.direction == 'long':
+            # Для лонга: если текущий SL ниже TP, поднимаем на уровень TP
+            if position.stop_loss < position.take_profit * 0.998:  # Чуть ниже TP
+                new_sl = position.take_profit * 0.999  # На уровне TP минус комиссия
+                should_move_sl = True
+        else:  # short
+            # Для шорта: если текущий SL выше TP, опускаем на уровень TP
+            if position.stop_loss > position.take_profit * 1.002:
+                new_sl = position.take_profit * 1.001  # На уровне TP плюс комиссия
+                should_move_sl = True
+        
+        if should_move_sl and new_sl:
+            old_sl = position.stop_loss
+            position.stop_loss = new_sl
+            
+            # Обновляем ордер на бирже
+            sl_side = 'sell' if position.direction == 'long' else 'buy'
             try:
-                df = await self.data_loader.fetch_ohlcv(symbol, '5m', limit=50)
-                if len(df) < 20:
-                    return
-                
-                # Calculate ATR
-                high = df['high'].values
-                low = df['low'].values
-                close = df['close'].values
-                
-                tr_values = []
-                for i in range(1, len(high)):
-                    tr = max(
-                        high[i] - low[i],
-                        abs(high[i] - close[i-1]),
-                        abs(low[i] - close[i-1])
-                    )
-                    tr_values.append(tr)
-                
-                atr = sum(tr_values[-14:]) / 14 if len(tr_values) >= 14 else 0
-                
-                if atr <= 0:
-                    return
-                
-                # Aggressive trailing: 1.5x ATR instead of 2.5x
-                aggressive_mult = 1.5
-                
-                if position.direction == 'long':
-                    new_sl = current_price - (aggressive_mult * atr)
-                    if new_sl > position.stop_loss:
-                        old_sl = position.stop_loss
-                        position.stop_loss = new_sl
-                        
-                        sl_side = 'sell'
-                        await self.order_executor.update_stop_loss(
-                            symbol, sl_side, new_sl
-                        )
-                        
-                        logger.info(
-                            f"[AGGRESSIVE TRAIL] {symbol}: {old_sl:.4f} -> {new_sl:.4f} "
-                            f"(using {aggressive_mult}x ATR for profit protection)"
-                        )
-                else:
-                    new_sl = current_price + (aggressive_mult * atr)
-                    if new_sl < position.stop_loss:
-                        old_sl = position.stop_loss
-                        position.stop_loss = new_sl
-                        
-                        sl_side = 'buy'
-                        await self.order_executor.update_stop_loss(
-                            symbol, sl_side, new_sl
-                        )
-                        
-                        logger.info(
-                            f"[AGGRESSIVE TRAIL] {symbol}: {old_sl:.4f} -> {new_sl:.4f} "
-                            f"(using {aggressive_mult}x ATR for profit protection)"
-                        )
+                await self.order_executor.update_stop_loss(symbol, sl_side, new_sl)
+                logger.info(
+                    f"[TP PROTECTION] {symbol}: SL переставлен на уровень TP! "
+                    f"{old_sl:.4f} -> {new_sl:.4f} (прибыль защищена)"
+                )
             except Exception as e:
-                logger.debug(f"[DYNAMIC TP ERROR] {symbol}: {e}")
+                logger.error(f"[TP PROTECTION ERROR] {symbol}: {e}")
+    
+    async def _fetch_realtime_indicators(self, symbol: str) -> Optional[Dict]:
+        """
+        Получает набор индикаторов в реальном времени для анализа.
+        Используем разные таймфреймы для лучшей картины.
+        """
+        try:
+            # Получаем данные с разных таймфреймов
+            df_5m = await self.data_loader.fetch_ohlcv(symbol, '5m', limit=50)
+            df_15m = await self.data_loader.fetch_ohlcv(symbol, '15m', limit=30)
+            df_1h = await self.data_loader.fetch_ohlcv(symbol, '1h', limit=20)
+            
+            if len(df_5m) < 20:
+                return None
+            
+            # Рассчитываем индикаторы на 5минках
+            high = df_5m['high'].values
+            low = df_5m['low'].values
+            close = df_5m['close'].values
+            volume = df_5m['volume'].values
+            
+            # RSI (14 периодов)
+            rsi = self._calculate_rsi(close, 14)
+            
+            # MACD
+            macd_line, signal_line, macd_hist = self._calculate_macd(close)
+            
+            # ATR
+            atr = self._calculate_atr(high, low, close, 14)
+            
+            # Объемы (сравнение со средним)
+            avg_volume = sum(volume[-20:]) / 20 if len(volume) >= 20 else 0
+            volume_ratio = volume[-1] / avg_volume if avg_volume > 0 else 1.0
+            
+            # Тренд (цена выше/ниже EMA20)
+            ema20 = sum(close[-20:]) / 20
+            current_price = close[-1]
+            trend_strength = (current_price - ema20) / ema20
+            
+            # Волатильность
+            volatility = (max(high[-10:]) - min(low[-10:])) / min(low[-10:])
+            
+            return {
+                'rsi': rsi,
+                'macd_line': macd_line,
+                'macd_signal': signal_line,
+                'macd_histogram': macd_hist,
+                'atr': atr,
+                'volume_ratio': volume_ratio,
+                'trend_strength': trend_strength,
+                'volatility': volatility,
+                'ema20': ema20,
+                'current_price': current_price
+            }
+            
+        except Exception as e:
+            logger.error(f"[INDICATORS ERROR] {symbol}: {e}")
+            return None
+    
+    def _calculate_rsi(self, prices: np.ndarray, period: int = 14) -> float:
+        """Рассчитывает RSI."""
+        try:
+            import numpy as np
+            deltas = np.diff(prices)
+            gains = np.where(deltas > 0, deltas, 0)
+            losses = np.where(deltas < 0, -deltas, 0)
+            
+            avg_gain = sum(gains[-period:]) / period if len(gains) >= period else 0
+            avg_loss = sum(losses[-period:]) / period if len(losses) >= period else 0
+            
+            if avg_loss == 0:
+                return 100.0
+            
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+            return rsi
+        except:
+            return 50.0
+    
+    def _calculate_macd(self, prices: np.ndarray):
+        """Рассчитывает MACD (12, 26, 9)."""
+        try:
+            import numpy as np
+            ema12 = self._ema(prices, 12)
+            ema26 = self._ema(prices, 26)
+            macd_line = ema12 - ema26
+            
+            # Signal line (EMA9 от MACD)
+            macd_values = []
+            for i in range(len(prices)):
+                if i >= 25:
+                    macd_values.append(macd_line if isinstance(macd_line, (int, float)) else (ema12 - ema26))
+            
+            if len(macd_values) < 9:
+                signal_line = macd_line if isinstance(macd_line, (int, float)) else 0
+            else:
+                signal_line = self._ema(np.array(macd_values[-9:]), 9)
+            
+            histogram = macd_line - signal_line if isinstance(macd_line, (int, float)) else 0
+            return macd_line if isinstance(macd_line, (int, float)) else 0, signal_line, histogram
+        except:
+            return 0, 0, 0
+    
+    def _ema(self, prices: np.ndarray, period: int) -> float:
+        """Рассчитывает EMA."""
+        if len(prices) < period:
+            return sum(prices) / len(prices) if len(prices) > 0 else 0
+        
+        multiplier = 2 / (period + 1)
+        ema = sum(prices[:period]) / period
+        
+        for price in prices[period:]:
+            ema = (price - ema) * multiplier + ema
+        
+        return ema
+    
+    def _calculate_atr(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> float:
+        """Рассчитывает ATR."""
+        try:
+            tr_values = []
+            for i in range(1, len(high)):
+                tr = max(
+                    high[i] - low[i],
+                    abs(high[i] - close[i-1]),
+                    abs(low[i] - close[i-1])
+                )
+                tr_values.append(tr)
+            
+            return sum(tr_values[-period:]) / period if len(tr_values) >= period else 0
+        except:
+            return 0
+    
+    async def _analyze_exit_decision(
+        self,
+        symbol: str,
+        position,
+        current_price: float,
+        pnl_pct: float,
+        excess_pct: float,
+        indicators: Dict
+    ) -> Dict:
+        """
+        Анализирует индикаторы и принимает решение по позиции.
+        
+        Возвращает решение:
+        - action: 'close_all', 'close_partial', 'hold', 'move_tp'
+        - confidence: 0.0-1.0
+        - reason: описание причины
+        - new_tp: новый уровень TP (если нужно)
+        - close_percentage: какой % закрыть (если partial)
+        """
+        rsi = indicators['rsi']
+        macd_hist = indicators['macd_histogram']
+        volume_ratio = indicators['volume_ratio']
+        trend_strength = indicators['trend_strength']
+        atr = indicators['atr']
+        
+        score = 0  # Общий счет: положительный = держать/увеличивать, отрицательный = закрывать
+        reasons = []
+        
+        # ============================================
+        # Анализ RSI
+        # ============================================
+        if position.direction == 'long':
+            if rsi > 75:
+                score -= 2
+                reasons.append(f"RSI перекупленность ({rsi:.1f})")
+            elif rsi > 65:
+                score -= 1
+                reasons.append(f"RSI высоковат ({rsi:.1f})")
+            elif rsi < 40:
+                score -= 3
+                reasons.append(f"RSI слабость ({rsi:.1f})")
+            elif 45 <= rsi <= 65:
+                score += 1
+                reasons.append(f"RSI нейтральный ({rsi:.1f})")
+        else:  # short
+            if rsi < 25:
+                score -= 2
+                reasons.append(f"RSI перепроданность ({rsi:.1f})")
+            elif rsi < 35:
+                score -= 1
+                reasons.append(f"RSI низковат ({rsi:.1f})")
+            elif rsi > 60:
+                score -= 3
+                reasons.append(f"RSI сила ({rsi:.1f})")
+            elif 35 <= rsi <= 55:
+                score += 1
+                reasons.append(f"RSI нейтральный ({rsi:.1f})")
+        
+        # ============================================
+        # Анализ MACD
+        # ============================================
+        if position.direction == 'long':
+            if macd_hist < 0:
+                score -= 2
+                reasons.append("MACD медвежий")
+            elif macd_hist > 0 and macd_hist > indicators.get('macd_line', 0) * 0.3:
+                score += 2
+                reasons.append("MACD сильный бычий")
+            else:
+                score += 0.5
+                reasons.append("MACD нейтральный")
+        else:  # short
+            if macd_hist > 0:
+                score -= 2
+                reasons.append("MACD бычий")
+            elif macd_hist < 0 and abs(macd_hist) > abs(indicators.get('macd_line', 0)) * 0.3:
+                score += 2
+                reasons.append("MACD сильный медвежий")
+            else:
+                score += 0.5
+                reasons.append("MACD нейтральный")
+        
+        # ============================================
+        # Анализ объема
+        # ============================================
+        if volume_ratio > 2.0:
+            score += 2
+            reasons.append(f"Объем высокий ({volume_ratio:.1f}x)")
+        elif volume_ratio > 1.5:
+            score += 1
+            reasons.append(f"Объем выше среднего ({volume_ratio:.1f}x)")
+        elif volume_ratio < 0.7:
+            score -= 1
+            reasons.append(f"Объем низкий ({volume_ratio:.1f}x)")
+        
+        # ============================================
+        # Анализ тренда
+        # ============================================
+        if position.direction == 'long':
+            if trend_strength > 0.02:
+                score += 2
+                reasons.append(f"Тренд сильный (+{trend_strength:.2%})")
+            elif trend_strength > 0.005:
+                score += 1
+                reasons.append(f"Тренд умеренный (+{trend_strength:.2%})")
+            elif trend_strength < -0.01:
+                score -= 2
+                reasons.append(f"Тренд слабый ({trend_strength:.2%})")
+        else:  # short
+            if trend_strength < -0.02:
+                score += 2
+                reasons.append(f"Тренд сильный ({trend_strength:.2%})")
+            elif trend_strength < -0.005:
+                score += 1
+                reasons.append(f"Тренд умеренный ({trend_strength:.2%})")
+            elif trend_strength > 0.01:
+                score -= 2
+                reasons.append(f"Тренд слабый ({trend_strength:.2%})")
+        
+        # ============================================
+        # Формирование решения
+        # ============================================
+        decision = {
+            'action': 'hold',
+            'confidence': 0.5,
+            'reasons': reasons,
+            'score': score,
+            'new_tp': None,
+            'close_percentage': 0.0
+        }
+        
+        # Сильные сигналы на закрытие
+        if score <= -3:
+            decision['action'] = 'close_all'
+            decision['confidence'] = 0.9
+            decision['reasons'].append("Сильные сигналы на выход")
+        
+        # Умеренные сигналы на частичное закрытие
+        elif score <= -1:
+            decision['action'] = 'close_partial'
+            decision['close_percentage'] = 0.5  # Закрыть 50%
+            decision['confidence'] = 0.7
+            decision['reasons'].append("Умеренные сигналы на фиксацию")
+        
+        # Сильные сигналы держать + двигать TP
+        elif score >= 3 and excess_pct > 0.02:
+            decision['action'] = 'move_tp'
+            # Двигаем TP на основе ATR
+            if position.direction == 'long':
+                decision['new_tp'] = current_price + (2.0 * atr)
+            else:
+                decision['new_tp'] = current_price - (2.0 * atr)
+            decision['confidence'] = 0.8
+            decision['reasons'].append("Сильный тренд, двигаем TP")
+        
+        # Нейтральная зона - держим с trailing
+        elif score >= 0:
+            decision['action'] = 'hold'
+            decision['confidence'] = 0.6
+            decision['reasons'].append("Нейтральные/положительные сигналы")
+        
+        logger.info(
+            f"[TP ANALYSIS] {symbol} | Score: {score:+d} | Action: {decision['action']} | "
+            f"Confidence: {decision['confidence']:.0%} | {' | '.join(reasons[:3])}"
+        )
+        
+        return decision
+    
+    async def _execute_exit_decision(
+        self,
+        symbol: str,
+        position,
+        decision: Dict,
+        current_price: float
+    ):
+        """Выполняет принятое решение по позиции."""
+        action = decision['action']
+        
+        if action == 'close_all':
+            logger.warning(
+                f"[TP DECISION] {symbol}: ЗАКРЫТЬ ВСЮ ПОЗИЦИЮ | "
+                f"Причина: {decision['reasons'][-1]} | "
+                f"PnL: {position.get_pnl_pct(current_price):+.2%}"
+            )
+            # Здесь можно добавить логику закрытия, но пока только логирование
+            # В реальной торговле: await self.order_executor.close_position(symbol)
+        
+        elif action == 'close_partial':
+            close_pct = decision['close_percentage']
+            logger.info(
+                f"[TP DECISION] {symbol}: ЗАКРЫТЬ {close_pct:.0%} ПОЗИЦИИ | "
+                f"Причина: {decision['reasons'][-1]} | "
+                f"PnL: {position.get_pnl_pct(current_price):+.2%}"
+            )
+            # В реальной торговле: частичное закрытие
+        
+        elif action == 'move_tp':
+            new_tp = decision['new_tp']
+            if new_tp:
+                old_tp = position.take_profit
+                position.take_profit = new_tp
+                
+                logger.info(
+                    f"[TP DECISION] {symbol}: ДВИНУТЬ TP | "
+                    f"{old_tp:.4f} -> {new_tp:.4f} | "
+                    f"Причина: {decision['reasons'][-1]}"
+                )
+        
+        elif action == 'hold':
+            logger.debug(
+                f"[TP DECISION] {symbol}: ДЕРЖАТЬ | "
+                f"PnL: {position.get_pnl_pct(current_price):+.2%} | "
+                f"Причина: {decision['reasons'][-1]}"
+            )
     
     async def _check_partial_close(
         self,
