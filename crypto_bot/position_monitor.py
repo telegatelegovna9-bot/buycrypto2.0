@@ -733,22 +733,49 @@ class PositionMonitor:
         action = decision['action']
         
         if action == 'close_all':
-            logger.warning(
+            logger.critical(
                 f"[TP DECISION] {symbol}: ЗАКРЫТЬ ВСЮ ПОЗИЦИЮ | "
                 f"Причина: {decision['reasons'][-1]} | "
                 f"PnL: {position.get_pnl_pct(current_price):+.2%}"
             )
-            # Здесь можно добавить логику закрытия, но пока только логирование
-            # В реальной торговле: await self.order_executor.close_position(symbol)
+            # КРИТИЧЕСКИ ВАЖНО: Реальное закрытие позиции при негативных сигналах
+            # Это предотвращает разворот цены и уход в убыток
+            try:
+                # Закрываем через order_executor
+                close_side = 'sell' if position.direction == 'long' else 'buy'
+                await self.order_executor.execute_market_order(
+                    symbol, close_side, position.size
+                )
+                logger.critical(
+                    f"[TP EXECUTED] {symbol}: Позиция ЗАКРЫТА по сигналу индикаторов | "
+                    f"Сторона: {close_side}, Размер: {position.size}"
+                )
+            except Exception as e:
+                logger.error(f"[TP CLOSE ERROR] {symbol}: Не удалось закрыть позицию: {e}")
         
         elif action == 'close_partial':
             close_pct = decision['close_percentage']
-            logger.info(
+            close_size = position.size * close_pct
+            
+            logger.warning(
                 f"[TP DECISION] {symbol}: ЗАКРЫТЬ {close_pct:.0%} ПОЗИЦИИ | "
                 f"Причина: {decision['reasons'][-1]} | "
                 f"PnL: {position.get_pnl_pct(current_price):+.2%}"
             )
-            # В реальной торговле: частичное закрытие
+            # Частичное закрытие для фиксации прибыли
+            try:
+                close_side = 'sell' if position.direction == 'long' else 'buy'
+                await self.order_executor.execute_market_order(
+                    symbol, close_side, close_size
+                )
+                logger.warning(
+                    f"[TP PARTIAL EXECUTED] {symbol}: Закрыто {close_size} из {position.size} | "
+                    f"Остаток: {position.size - close_size}"
+                )
+                # Обновляем размер позиции локально
+                position.size -= close_size
+            except Exception as e:
+                logger.error(f"[TP PARTIAL ERROR] {symbol}: {e}")
         
         elif action == 'move_tp':
             new_tp = decision['new_tp']
