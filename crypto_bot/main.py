@@ -395,7 +395,7 @@ class TradingBot:
                 for strategy_name in strategies_used:
                     if strategy_name:
                         self.meta_controller.update_strategy_performance(
-                            strategy_name, pnl, is_winner
+                            strategy_name, pnl, is_winner, exit_reason
                         )
                 
                 # Удаляем из активных сигналов

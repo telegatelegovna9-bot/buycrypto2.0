@@ -119,14 +119,25 @@ class MetaController:
         except Exception as e:
             logger.warning(f"Failed to save strategy stats: {e}")
 
-    def update_weights(self, strategy_name: str, is_win: bool, pnl: float):
+    def update_weights(self, strategy_name: str, is_win: bool, pnl: float, exit_reason: str = None):
         """Update strategy weights based on performance."""
         if strategy_name not in self.strategy_stats:
             return
             
         stats = self.strategy_stats[strategy_name]
         
-        if is_win:
+        # Умное определение win/loss с учётом причины выхода
+        actual_is_win = is_win
+        if exit_reason == 'sl' and pnl > 0:
+            # Закрылись по стопу, но в плюсе (трейлинг сработал) - считаем как win
+            actual_is_win = True
+            logger.info(f"[STRATEGY STATS] {strategy_name}: Closed by SL but profitable (pnl={pnl:.2f}) - counting as WIN")
+        elif exit_reason == 'tp' and pnl <= 0:
+            # Редкий случай: закрылись по TP, но вышли в ноль или минус (комиссии)
+            actual_is_win = False
+            logger.warning(f"[STRATEGY STATS] {strategy_name}: Closed by TP but unprofitable (pnl={pnl:.2f}) - counting as LOSS")
+        
+        if actual_is_win:
             stats["wins"] += 1
         else:
             stats["losses"] += 1
@@ -146,14 +157,16 @@ class MetaController:
                 self.strategy_weights[strategy_name] = max(0.1, self.strategy_weights[strategy_name] * 0.95)
                 logger.debug(f"Decreased weight for {strategy_name} to {self.strategy_weights[strategy_name]:.2f}")
 
+        # Принудительное сохранение с проверкой
         self._save_strategy_stats()
+        logger.info(f"[STRATEGY STATS UPDATED] {strategy_name}: wins={stats['wins']}, losses={stats['losses']}, total_pnl={stats['total_pnl']:.2f}, weight={self.strategy_weights[strategy_name]:.3f}")
 
-    def update_strategy_performance(self, strategy_name: str, pnl: float, is_winner: bool):
+    def update_strategy_performance(self, strategy_name: str, pnl: float, is_winner: bool, exit_reason: str = None):
         """
         Backward-compatible alias used by TradingBot.
         Updates strategy stats and adaptive weight.
         """
-        self.update_weights(strategy_name=strategy_name, is_win=is_winner, pnl=pnl)
+        self.update_weights(strategy_name=strategy_name, is_win=is_winner, pnl=pnl, exit_reason=exit_reason)
 
     def adapt_strategy_weights(self):
         """

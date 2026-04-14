@@ -1,11 +1,13 @@
-```
-# Python cache files
+```gitignore
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Environment variables
+# Dependencies
+venv/
+.venv/
 .env
 .env.local
 *.env.*
@@ -13,32 +15,17 @@ __pycache__/
 # Logs
 *.log
 
-# Coverage reports
-.coverage
-htmlcov/
-coverage/
-
-# IDE specific
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *.tmp
 
-# OS specific
-.DS_Store
-Thumbs.db
-
 # Build artifacts
 dist/
 build/
-*.so
-*.dylib
-*.dll
-*.exe
+*.o
+*.obj
 *.out
-
-# Testing
-.pytest_cache/
-.mypy_cache/
 ```
