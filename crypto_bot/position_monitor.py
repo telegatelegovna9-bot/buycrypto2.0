@@ -360,7 +360,7 @@ class PositionMonitor:
         # ============================================
         # ШАГ 1: СРАЗУ ставим SL на уровень TP (защита прибыли)
         # ============================================
-        self._secure_profit_at_tp(symbol, position, current_price)
+        await self._secure_profit_at_tp(symbol, position, current_price)
         
         # ============================================
         # ШАГ 2: Получаем индикаторы для анализа
@@ -382,7 +382,7 @@ class PositionMonitor:
         # ============================================
         await self._execute_exit_decision(symbol, position, decision, current_price)
     
-    def _secure_profit_at_tp(self, symbol: str, position, current_price: float):
+    async def _secure_profit_at_tp(self, symbol: str, position, current_price: float):
         """
         КРИТИЧЕСКИ ВАЖНО: Сразу ставит SL на уровень TP когда цена его достигает.
         Это гарантирует что мы не потеряем прибыль при откате.
