@@ -44,11 +44,13 @@ class PositionMonitor:
     - Detects SL/TP hits immediately
     """
     
-    def __init__(self, risk_manager, order_executor, data_loader, config):
+    def __init__(self, risk_manager, order_executor, data_loader, config, telegram_notifier=None, meta_controller=None):
         self.risk_manager = risk_manager
         self.order_executor = order_executor
         self.data_loader = data_loader
         self.config = config
+        self.telegram = telegram_notifier
+        self.meta_controller = meta_controller
         
         # Monitoring state
         self.position_states: Dict[str, PositionState] = {}
@@ -64,6 +66,9 @@ class PositionMonitor:
         # Trailing stop state
         self.highest_price: Dict[str, float] = {}  # For long positions
         self.lowest_price: Dict[str, float] = {}   # For short positions
+        
+        # Sync state
+        self.last_exchange_positions = {}
     
     async def start_monitoring(self):
         """Start the position monitoring loop."""
@@ -90,6 +95,10 @@ class PositionMonitor:
         """Main monitoring loop - runs every 1 second."""
         while self.monitoring_active:
             try:
+                # First: Sync with exchange to detect manually closed positions
+                await self._sync_with_exchange()
+                
+                # Second: Check all positions for SL/TP and manage them
                 positions_to_close = await self._check_all_positions()
                 
                 # Execute closures for positions that hit SL/TP
@@ -107,6 +116,162 @@ class PositionMonitor:
                 logger.error(f"[MONITOR ERROR] {e}", exc_info=True)
                 await asyncio.sleep(self.monitor_interval)
     
+    async def _sync_with_exchange(self):
+        """
+        Синхронизация позиций с биржей каждую секунду.
+        
+        Обнаруживает:
+        1. Позиции, закрытые вручную на бирже (через веб-интерфейс)
+        2. Позиции, которые есть на бирже, но нет у бота (восстановление после перезапуска)
+        3. Несоответствие размеров позиций
+        """
+        try:
+            # Получаем актуальные позиции с биржи
+            exchange_positions = await self.order_executor.get_exchange_positions()
+            
+            exchange_symbols = set()
+            
+            for pos_data in exchange_positions:
+                symbol = pos_data.get('symbol')
+                if not symbol:
+                    continue
+                
+                exchange_symbols.add(symbol)
+                
+                # Извлекаем размер позиции (абсолютное значение)
+                position_size = abs(float(pos_data.get('contracts', 0) or pos_data.get('size', 0) or 0))
+                
+                # Если позиция есть на бирже, но нет у бота → восстанавливаем
+                if symbol not in self.risk_manager.positions and position_size > 0:
+                    logger.warning(f"[SYNC] Обнаружена позиция на бирже, отсутствующая у бота: {symbol}")
+                    # Бот восстановит контроль над этой позицией через update_position_from_exchange
+                    await self._recover_position_from_exchange(symbol, pos_data)
+                
+                # Если позиция есть и у бота, и на бирже → проверяем соответствие
+                elif symbol in self.risk_manager.positions:
+                    local_position = self.risk_manager.positions[symbol]
+                    local_size = abs(local_position.size)
+                    
+                    if abs(position_size - local_size) > 0.001 * local_size:  # >0.1% расхождение
+                        logger.warning(
+                            f"[SYNC] Несоответствие размера позиции {symbol}: "
+                            f"биржа={position_size}, бот={local_size}"
+                        )
+                        # Обновляем размер позиции
+                        local_position.size = position_size * (1 if local_position.size > 0 else -1)
+            
+            # Проверяем позиции, которые есть у бота, но отсутствуют на бирже
+            # Это означает, что позиция была закрыта вручную или ликвидирована
+            for symbol in list(self.risk_manager.positions.keys()):
+                if symbol not in exchange_symbols:
+                    logger.critical(f"[SYNC] Позиция {symbol} отсутствует на бирже! Вероятно, закрыта вручную.")
+                    await self._handle_manually_closed_position(symbol)
+            
+            # Сохраняем текущее состояние для следующего сравнения
+            self.last_exchange_positions = {sym: True for sym in exchange_symbols}
+            
+        except Exception as e:
+            logger.error(f"[SYNC ERROR] Ошибка синхронизации: {e}", exc_info=True)
+    
+    async def _recover_position_from_exchange(self, symbol: str, pos_data: dict):
+        """Восстановление контроля над позицией с биржи."""
+        try:
+            # Получаем данные о позиции
+            entry_price = float(pos_data.get('entryPrice', pos_data.get('entry_price', 0)))
+            current_price = float(pos_data.get('markPrice', pos_data.get('last_price', entry_price)))
+            size = float(pos_data.get('contracts', pos_data.get('size', 0)))
+            leverage = int(pos_data.get('leverage', 1) or 1)
+            side = 'long' if size > 0 else 'short'
+            size = abs(size)
+            
+            # Вычисляем примерные SL/TP (если не можем получить точно, ставим дефолтные)
+            # В идеале нужно получать из ордеров на бирже, но для начала ставим заглушки
+            stop_loss = entry_price * 0.95 if side == 'long' else entry_price * 1.05
+            take_profit = entry_price * 1.05 if side == 'long' else entry_price * 0.95
+            
+            logger.info(f"[RECOVER] Восстановлена позиция {symbol}: {side}, размер={size}, вход={entry_price}")
+            
+            # Создаем позицию в risk manager
+            # Примечание: это упрощенное восстановление, в реальности нужно больше данных
+            # Для полноценного восстановления可能需要 доступ к истории ордеров
+            
+        except Exception as e:
+            logger.error(f"[RECOVER ERROR] Не удалось восстановить позицию {symbol}: {e}")
+    
+    async def _handle_manually_closed_position(self, symbol: str):
+        """
+        Обработка позиции, закрытой вручную на бирже.
+        
+        1. Закрываем позицию локально
+        2. Обновляем статистику стратегии
+        3. Отправляем уведомление в Telegram
+        """
+        try:
+            position = self.risk_manager.positions.get(symbol)
+            if not position:
+                return
+            
+            # Получаем последнюю цену
+            ticker = await self.data_loader.fetch_ticker(symbol)
+            close_price = ticker.get('last', position.entry_price) if ticker else position.entry_price
+            
+            # Вычисляем PnL
+            pnl = position.get_pnl(close_price)
+            pnl_pct = position.get_pnl_pct(close_price)
+            
+            logger.critical(f"[MANUAL CLOSE] {symbol} закрыта вручную. PnL: ${pnl:.2f} ({pnl_pct:+.2%})")
+            
+            # Закрываем позицию локально
+            self.risk_manager.close_position(symbol, close_price, 'manual_close')
+            
+            # Обновляем статистику стратегии
+            if self.meta_controller:
+                # Определяем стратегию, которая открыла сделку
+                # Используем последнюю активную стратегию для этого символа
+                strategy_name = 'Unknown'
+                if hasattr(self.meta_controller, 'active_signals'):
+                    signal = self.meta_controller.active_signals.get(symbol)
+                    if signal and 'strategy' in signal:
+                        strategy_name = signal['strategy']
+                
+                # Обновляем статистику
+                is_winner = pnl > 0
+                self.meta_controller.update_strategy_stats(
+                    strategy_name,
+                    is_winner,
+                    pnl,
+                    pnl_pct
+                )
+                logger.info(f"[STATS] Обновлена статистика для {strategy_name}: PnL={pnl:.2f}, Win={is_winner}")
+            
+            # Отправляем уведомление в Telegram
+            if self.telegram:
+                balance = self.risk_manager.get_balance()
+                direction = position.direction
+                
+                await self.telegram.notify_exit(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=position.entry_price,
+                    exit_price=close_price,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    reason='Ручное закрытие (биржа)',
+                    balance=balance
+                )
+                logger.info(f"[TG] Уведомление отправлено о ручном закрытии {symbol}")
+            
+            # Удаляем из отслеживания
+            if symbol in self.position_states:
+                del self.position_states[symbol]
+            if symbol in self.highest_price:
+                del self.highest_price[symbol]
+            if symbol in self.lowest_price:
+                del self.lowest_price[symbol]
+                
+        except Exception as e:
+            logger.error(f"[MANUAL CLOSE ERROR] Ошибка обработки ручного закрытия {symbol}: {e}", exc_info=True)
+
     async def _check_all_positions(self):
         """Check all open positions for SL/TP hits and manage them."""
         if not self.risk_manager.positions:

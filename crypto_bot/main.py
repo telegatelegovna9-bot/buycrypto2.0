@@ -89,7 +89,9 @@ class TradingBot:
             risk_manager=self.risk_manager,
             order_executor=self.execution_engine,
             data_loader=self.data_loader,
-            config=self.config
+            config=self.config,
+            telegram_notifier=self.telegram,
+            meta_controller=self.meta_controller
         )
         await self.position_monitor.start_monitoring()
         logger.info("Position Monitor initialized and started")

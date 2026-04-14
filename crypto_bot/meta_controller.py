@@ -186,6 +186,48 @@ class MetaController:
         Updates strategy stats and adaptive weight.
         """
         self.update_weights(strategy_name=strategy_name, is_win=is_winner, pnl=pnl, exit_reason=exit_reason)
+    
+    def update_strategy_stats(self, strategy_name: str, is_winner: bool, pnl: float, pnl_pct: float):
+        """
+        Обновление статистики стратегии при закрытии позиции.
+        Используется PositionMonitor при ручном закрытии позиций.
+        
+        Args:
+            strategy_name: Название стратегии
+            is_winner: Была ли сделка прибыльной
+            pnl: Абсолютная прибыль/убыток в долларах
+            pnl_pct: Процентная прибыль/убыток
+        """
+        if strategy_name not in self.strategy_stats:
+            logger.warning(f"[STATS] Стратегия {strategy_name} не найдена, пропускаем обновление")
+            return
+        
+        # Обновляем счетчики
+        stats = self.strategy_stats[strategy_name]
+        stats["total_trades"] += 1
+        
+        if is_winner:
+            stats["wins"] += 1
+        else:
+            stats["losses"] += 1
+        
+        stats["total_pnl"] += pnl
+        
+        # Сохраняем обновленную статистику
+        self._save_strategy_stats()
+        
+        # Обновляем веса стратегий
+        self.update_weights(
+            strategy_name=strategy_name,
+            is_win=is_winner,
+            pnl=pnl,
+            exit_reason='manual_close'
+        )
+        
+        logger.info(
+            f"[STATS UPDATED] {strategy_name}: Trades={stats['total_trades']}, "
+            f"Wins={stats['wins']}, Losses={stats['losses']}, PnL=${stats['total_pnl']:.2f}"
+        )
 
     def adapt_strategy_weights(self):
         """

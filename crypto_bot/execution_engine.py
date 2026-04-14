@@ -558,3 +558,27 @@ class ExecutionEngine:
         except Exception as e:
             logger.error(f"Error executing signal: {e}")
             return False
+    
+    async def get_exchange_positions(self) -> List[Dict]:
+        """
+        Получить все открытые позиции с биржи.
+        
+        Returns:
+            Список словарей с данными о позициях
+        """
+        try:
+            # Получаем все позиции (Binance возвращает все позиции, включая пустые)
+            all_positions = await self.exchange.fetch_positions()
+            
+            # Фильтруем только открытые позиции (с ненулевым размером)
+            open_positions = []
+            for pos in all_positions:
+                contracts = float(pos.get('contracts', 0) or pos.get('size', 0) or 0)
+                if abs(contracts) > 0.001:  # Только если есть открытый размер
+                    open_positions.append(pos)
+            
+            return open_positions
+            
+        except Exception as e:
+            logger.error(f"[EXEC] Error fetching exchange positions: {e}", exc_info=True)
+            return []
