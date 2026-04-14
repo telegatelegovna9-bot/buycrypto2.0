@@ -397,9 +397,12 @@ class TradingBot:
                         self.meta_controller.update_strategy_performance(
                             strategy_name, pnl, is_winner, exit_reason
                         )
+                        logger.info(f"[STATS UPDATED] {strategy_name}: PnL={pnl:.2f}, Win={is_winner}, Reason={exit_reason}")
                 
                 # Удаляем из активных сигналов
                 del self.active_signals[symbol]
+            else:
+                logger.warning(f"[STATS WARNING] No strategy found for closed position {symbol}")
             
             # Уведомляем через Telegram (always send final trade summary)
             if self.telegram.enabled:

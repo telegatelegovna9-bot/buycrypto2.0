@@ -360,7 +360,7 @@ class PositionMonitor:
         # ============================================
         # ШАГ 1: СРАЗУ ставим SL на уровень TP (защита прибыли)
         # ============================================
-        await self._secure_profit_at_tp(symbol, position, current_price)
+        self._secure_profit_at_tp(symbol, position, current_price)
         
         # ============================================
         # ШАГ 2: Получаем индикаторы для анализа
@@ -382,7 +382,7 @@ class PositionMonitor:
         # ============================================
         await self._execute_exit_decision(symbol, position, decision, current_price)
     
-    async def _secure_profit_at_tp(self, symbol: str, position, current_price: float):
+    def _secure_profit_at_tp(self, symbol: str, position, current_price: float):
         """
         КРИТИЧЕСКИ ВАЖНО: Сразу ставит SL на уровень TP когда цена его достигает.
         Это гарантирует что мы не потеряем прибыль при откате.
@@ -396,11 +396,17 @@ class PositionMonitor:
             if position.stop_loss < position.take_profit * 0.998:  # Чуть ниже TP
                 new_sl = position.take_profit * 0.999  # На уровне TP минус комиссия
                 should_move_sl = True
+                logger.info(
+                    f"[TP REACHED] {symbol}: Цена выше TP! Текущая={current_price:.4f}, TP={position.take_profit:.4f}"
+                )
         else:  # short
             # Для шорта: если текущий SL выше TP, опускаем на уровень TP
             if position.stop_loss > position.take_profit * 1.002:
                 new_sl = position.take_profit * 1.001  # На уровне TP плюс комиссия
                 should_move_sl = True
+                logger.info(
+                    f"[TP REACHED] {symbol}: Цена ниже TP! Текущая={current_price:.4f}, TP={position.take_profit:.4f}"
+                )
         
         if should_move_sl and new_sl:
             old_sl = position.stop_loss
@@ -410,7 +416,7 @@ class PositionMonitor:
             sl_side = 'sell' if position.direction == 'long' else 'buy'
             try:
                 await self.order_executor.update_stop_loss(symbol, sl_side, new_sl)
-                logger.info(
+                logger.critical(
                     f"[TP PROTECTION] {symbol}: SL переставлен на уровень TP! "
                     f"{old_sl:.4f} -> {new_sl:.4f} (прибыль защищена)"
                 )

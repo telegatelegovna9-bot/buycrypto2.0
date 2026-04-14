@@ -115,9 +115,12 @@ class MetaController:
             temp_path = f"{self.stats_file}.tmp"
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(temp_path, self.stats_file)
+            logger.info(f"[STATS SAVED] Strategy stats saved to {self.stats_file}")
         except Exception as e:
-            logger.warning(f"Failed to save strategy stats: {e}")
+            logger.error(f"[STATS SAVE ERROR] Failed to save strategy stats: {e}")
 
     def update_weights(self, strategy_name: str, is_win: bool, pnl: float, exit_reason: str = None):
         """Update strategy weights based on performance."""
@@ -159,6 +162,19 @@ class MetaController:
 
         # Принудительное сохранение с проверкой
         self._save_strategy_stats()
+        
+        # Проверка что файл действительно обновился
+        try:
+            with open(self.stats_file, "r", encoding="utf-8") as f:
+                saved_data = json.load(f)
+                saved_stats = saved_data.get("strategy_stats", {}).get(strategy_name, {})
+                logger.info(
+                    f"[STATS VERIFY] Файл обновлен: {strategy_name} -> wins={saved_stats.get('wins')}, "
+                    f"losses={saved_stats.get('losses')}, total_pnl={saved_stats.get('total_pnl')}"
+                )
+        except Exception as e:
+            logger.error(f"[STATS VERIFY ERROR] Не удалось проверить файл: {e}")
+        
         logger.info(f"[STRATEGY STATS UPDATED] {strategy_name}: wins={stats['wins']}, losses={stats['losses']}, total_pnl={stats['total_pnl']:.2f}, weight={self.strategy_weights[strategy_name]:.3f}")
 
     def update_strategy_performance(self, strategy_name: str, pnl: float, is_winner: bool, exit_reason: str = None):
