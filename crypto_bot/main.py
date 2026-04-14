@@ -87,7 +87,7 @@ class TradingBot:
         # Initialize Position Monitor after execution engine is ready
         self.position_monitor = PositionMonitor(
             risk_manager=self.risk_manager,
-            order_executor=self.execution_engine.order_executor,
+            order_executor=self.execution_engine,
             data_loader=self.data_loader,
             config=self.config
         )
