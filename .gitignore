@@ -4,51 +4,45 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# Data files (if they are generated/intermediate)
-*.json
+.Python
+env/
+venv/
+.venv/
+.ENV
+.python-version
 
 # Logs
 *.log
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Dependencies
-.venv/
-venv/
-.env/
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
 
 # Coverage
 .coverage
 coverage/
 htmlcov/
 
-# Build artifacts
-dist/
-build/
-target/
-*.o
-*.obj
-*.out
-*.exe
-*.dll
-*.so
-*.a
-
 # Testing
 .pytest_cache/
 .mypy_cache/
+.hypothesis/
+
+# Environment
+.env
+.env.local
+.env.*
+!.env.example
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 ```

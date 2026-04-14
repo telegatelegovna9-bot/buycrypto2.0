@@ -36,7 +36,7 @@ class ExchangeConfig:
 class RiskConfig:
     """Risk management settings."""
     risk_per_trade: float = 0.01  # 1% of balance
-    max_positions: int = 2
+    max_positions: int = 3  # Changed from 2 to 3 simultaneous positions
     min_rr_ratio: float = 2.0  # Minimum risk-reward ratio 1:2
     max_drawdown: float = 0.15  # 15% max drawdown before stopping
     stop_loss_pct: float = 0.02  # Default 2% stop loss

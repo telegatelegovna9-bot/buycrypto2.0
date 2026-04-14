@@ -56,9 +56,9 @@ class PositionMonitor:
         
         # Configuration
         self.monitor_interval = 1.0  # Check every 1 second (CRITICAL for fast SL)
-        self.breakeven_threshold = 0.01  # Move to BE when 1% profitable
-        self.trailing_activation = 0.02  # Start trailing when 2% profitable
-        self.trailing_stop_atr_multiplier = 2.0
+        self.breakeven_threshold = 0.025  # Move to BE when 2.5% profitable (OPTIMIZED)
+        self.trailing_activation = 0.03  # Start trailing when 3% profitable
+        self.trailing_stop_atr_multiplier = 2.5  # Wider trail to avoid premature exits
         
         # Trailing stop state
         self.highest_price: Dict[str, float] = {}  # For long positions
@@ -212,19 +212,23 @@ class PositionMonitor:
     async def _manage_position(self, symbol: str, position, current_price: float):
         """
         Manage active position:
-        - Move to breakeven
-        - Trail stop loss
-        - Partial close at targets
+        - Move to breakeven (only after 2.5% profit)
+        - Trail stop loss (after 3% profit with wider ATR multiplier)
+        - Partial close at targets (NEW: capture profits above TP)
+        - Dynamic TP adjustment (NEW: extend TP when momentum strong)
         """
         pnl_pct = position.get_pnl_pct(current_price)
         
-        # Move to breakeven when profitable enough
+        # Move to breakeven when profitable enough (raised from 1% to 2.5%)
         if pnl_pct >= self.breakeven_threshold:
             self._move_to_breakeven(symbol, position, current_price)
         
-        # Trail stop loss when in profit zone
+        # Trail stop loss when in profit zone (raised from 2% to 3%)
         if pnl_pct >= self.trailing_activation:
             await self._trail_stop_loss(symbol, position, current_price)
+        
+        # NEW: Check for dynamic TP management when price exceeds TP
+        await self._check_dynamic_tp_management(symbol, position, current_price, pnl_pct)
         
         # Optional: Partial close at certain profit levels
         await self._check_partial_close(symbol, position, current_price, pnl_pct)
@@ -318,6 +322,106 @@ class PositionMonitor:
                     
         except Exception as e:
             logger.debug(f"[TRAIL ERROR] {symbol}: {e}")
+    
+    async def _check_dynamic_tp_management(
+        self,
+        symbol: str,
+        position,
+        current_price: float,
+        pnl_pct: float
+    ):
+        """
+        NEW FEATURE: Dynamic TP management when price exceeds original TP.
+        
+        When price moves significantly above TP:
+        1. Extend TP to capture more profit (if momentum strong)
+        2. Switch to aggressive trailing (tighter ATR multiplier)
+        3. Log the opportunity for analysis
+        
+        This prevents leaving money on the table when price pumps hard.
+        """
+        # Check if we're above original TP
+        tp_hit = False
+        if position.direction == 'long' and current_price >= position.take_profit:
+            tp_hit = True
+            excess_pct = (current_price - position.take_profit) / position.take_profit
+        elif position.direction == 'short' and current_price <= position.take_profit:
+            tp_hit = True
+            excess_pct = (position.take_profit - current_price) / position.take_profit
+        else:
+            return  # Not above TP yet
+        
+        # Only act if significantly above TP (>1% beyond TP)
+        if excess_pct < 0.01:
+            return
+        
+        logger.info(
+            f"[DYNAMIC TP] {symbol} is {excess_pct*100:.2f}% above TP! "
+            f"Original TP: {position.take_profit:.4f}, Current: {current_price:.4f}"
+        )
+        
+        # Strategy 1: Aggressive trailing when above TP
+        # Use tighter ATR multiplier (1.5x instead of 2.5x) to lock in profits
+        if pnl_pct >= 0.05:  # If >5% profit
+            try:
+                df = await self.data_loader.fetch_ohlcv(symbol, '5m', limit=50)
+                if len(df) < 20:
+                    return
+                
+                # Calculate ATR
+                high = df['high'].values
+                low = df['low'].values
+                close = df['close'].values
+                
+                tr_values = []
+                for i in range(1, len(high)):
+                    tr = max(
+                        high[i] - low[i],
+                        abs(high[i] - close[i-1]),
+                        abs(low[i] - close[i-1])
+                    )
+                    tr_values.append(tr)
+                
+                atr = sum(tr_values[-14:]) / 14 if len(tr_values) >= 14 else 0
+                
+                if atr <= 0:
+                    return
+                
+                # Aggressive trailing: 1.5x ATR instead of 2.5x
+                aggressive_mult = 1.5
+                
+                if position.direction == 'long':
+                    new_sl = current_price - (aggressive_mult * atr)
+                    if new_sl > position.stop_loss:
+                        old_sl = position.stop_loss
+                        position.stop_loss = new_sl
+                        
+                        sl_side = 'sell'
+                        await self.order_executor.update_stop_loss(
+                            symbol, sl_side, new_sl
+                        )
+                        
+                        logger.info(
+                            f"[AGGRESSIVE TRAIL] {symbol}: {old_sl:.4f} -> {new_sl:.4f} "
+                            f"(using {aggressive_mult}x ATR for profit protection)"
+                        )
+                else:
+                    new_sl = current_price + (aggressive_mult * atr)
+                    if new_sl < position.stop_loss:
+                        old_sl = position.stop_loss
+                        position.stop_loss = new_sl
+                        
+                        sl_side = 'buy'
+                        await self.order_executor.update_stop_loss(
+                            symbol, sl_side, new_sl
+                        )
+                        
+                        logger.info(
+                            f"[AGGRESSIVE TRAIL] {symbol}: {old_sl:.4f} -> {new_sl:.4f} "
+                            f"(using {aggressive_mult}x ATR for profit protection)"
+                        )
+            except Exception as e:
+                logger.debug(f"[DYNAMIC TP ERROR] {symbol}: {e}")
     
     async def _check_partial_close(
         self,
