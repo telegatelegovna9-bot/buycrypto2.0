@@ -75,6 +75,9 @@ class MetaController:
         
         # Minimum confidence threshold for trading
         self.min_confidence = 0.5
+        
+        # Deduplication tracker for stats updates
+        self._last_stats_update = {}
 
         # Persistent stats storage (survives bot restart)
         default_stats_file = os.path.join(os.path.dirname(__file__), "data", "strategy_stats.json")
@@ -198,25 +201,31 @@ class MetaController:
             pnl: Абсолютная прибыль/убыток в долларах
             pnl_pct: Процентная прибыль/убыток
         """
-        if strategy_name not in self.strategy_stats:
+        if not strategy_name or strategy_name == 'Unknown':
             logger.warning(f"[STATS] Стратегия {strategy_name} не найдена, пропускаем обновление")
             return
         
-        # Обновляем счетчики
-        stats = self.strategy_stats[strategy_name]
-        stats["total_trades"] += 1
+        # Защита от дублирования обновлений для одной сделки
+        dedup_key = f"{strategy_name}_{pnl}_{is_winner}"
+        current_time = time.time()
         
-        if is_winner:
-            stats["wins"] += 1
-        else:
-            stats["losses"] += 1
+        if dedup_key in self._last_stats_update:
+            if current_time - self._last_stats_update[dedup_key] < 5.0:  # 5 секунд защита
+                logger.debug(f"[STATS DEDUP] Пропущено дублирующее обновление для {strategy_name}")
+                return
         
-        stats["total_pnl"] += pnl
+        self._last_stats_update[dedup_key] = current_time
         
-        # Сохраняем обновленную статистику
-        # Сохранение будет вызвано внутри update_weights
+        if strategy_name not in self.strategy_stats:
+            logger.warning(f"[STATS] Стратегия {strategy_name} не найдена в словаре, создаем запись")
+            self.strategy_stats[strategy_name] = {
+                "wins": 0, 
+                "losses": 0, 
+                "total_pnl": 0.0,
+                "total_trades": 0
+            }
         
-        # Обновляем веса стратегий
+        # Обновляем веса стратегий (это также обновит статистику и сохранит файл)
         self.update_weights(
             strategy_name=strategy_name,
             is_win=is_winner,
@@ -224,6 +233,7 @@ class MetaController:
             exit_reason='manual_close'
         )
         
+        stats = self.strategy_stats[strategy_name]
         logger.info(
             f"[STATS UPDATED] {strategy_name}: Trades={stats['total_trades']}, "
             f"Wins={stats['wins']}, Losses={stats['losses']}, PnL=${stats['total_pnl']:.2f}"
