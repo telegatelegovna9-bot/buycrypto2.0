@@ -449,6 +449,21 @@ class RiskManager:
         return pnl
     
     def get_total_exposure(self) -> float:
+        """Get total portfolio exposure."""
+        return sum(
+            pos.size * pos.leverage 
+            for pos in self.positions.values()
+        )
+    
+    def get_balance(self) -> float:
+        """Get current balance."""
+        return self.balance
+    
+    def get_position(self, symbol: str) -> Optional[Position]:
+        """Get position by symbol."""
+        return self.positions.get(symbol)
+    
+    def get_total_exposure_full(self) -> float:
         """Get total account exposure."""
         total = 0
         for position in self.positions.values():
