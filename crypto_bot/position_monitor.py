@@ -80,6 +80,22 @@ class PositionMonitor:
         self.closing_positions: Dict[str, datetime] = {}  # Symbols being closed + timestamp
         self.recently_closed: Dict[str, datetime] = {}    # Symbols recently closed + timestamp
         self.CLOSING_PROTECTION_SECONDS = 10.0  # Don't recover for 10s after close
+        
+        # Mapping of symbol -> strategy name that opened the position
+        self.position_strategies: Dict[str, str] = {}
+    
+    def register_position_strategy(self, symbol: str, strategy_name: str):
+        """Register which strategy opened a position for stats tracking."""
+        self.position_strategies[symbol] = strategy_name
+        logger.debug(f"[STRATEGY MAP] {symbol} -> {strategy_name}")
+    
+    def get_position_strategy(self, symbol: str) -> str:
+        """Get the strategy name for a position."""
+        return self.position_strategies.get(symbol, 'Unknown')
+    
+    def clear_position_strategy(self, symbol: str):
+        """Clear strategy mapping after position is closed."""
+        self.position_strategies.pop(symbol, None)
     
     async def start_monitoring(self):
         """Start the position monitoring loop."""
@@ -266,11 +282,16 @@ class PositionMonitor:
             # Обновляем статистику стратегии
             if self.meta_controller:
                 # Определяем стратегию, которая открыла сделку
-                # Ищем в active_signals main.py (через meta_controller)
+                # Ищем стратегию, которая открыла позицию
                 strategy_name = 'Unknown'
                 
-                # Попытка 1: Через meta_controller.active_signals
-                if hasattr(self.meta_controller, 'active_signals'):
+                # Попытка 1: Через position_strategies (НОВЫЙ надежный метод)
+                if symbol in self.position_strategies:
+                    strategy_name = self.position_strategies[symbol]
+                    logger.debug(f"[STRATEGY FOUND] {symbol} -> {strategy_name} (from position_strategies)")
+                
+                # Попытка 2: Через meta_controller.active_signals
+                if strategy_name == 'Unknown' and hasattr(self.meta_controller, 'active_signals'):
                     signal = self.meta_controller.active_signals.get(symbol)
                     if signal and 'strategy' in signal:
                         strat_val = signal['strategy']
@@ -282,12 +303,17 @@ class PositionMonitor:
                                     break
                         elif isinstance(strat_val, str) and strat_val and strat_val != 'Unknown':
                             strategy_name = strat_val
+                    if strategy_name != 'Unknown':
+                        logger.debug(f"[STRATEGY FOUND] {symbol} -> {strategy_name} (from active_signals)")
                 
-                # Попытка 2: Через position_states (если есть сохраненная стратегия)
+                # Попытка 3: Через position_states (если есть сохраненная стратегия)
                 if strategy_name == 'Unknown' and symbol in self.position_states:
                     state = self.position_states[symbol]
                     if hasattr(state, 'strategy') and state.strategy:
                         strategy_name = state.strategy
+                        logger.debug(f"[STRATEGY FOUND] {symbol} -> {strategy_name} (from position_states)")
+                
+                logger.info(f"[STRATEGY DETECTED] {symbol}: {strategy_name}")
                 
                 # Обновляем статистику
                 is_winner = pnl > 0
@@ -323,6 +349,8 @@ class PositionMonitor:
                 del self.highest_price[symbol]
             if symbol in self.lowest_price:
                 del self.lowest_price[symbol]
+            # Очищаем привязку стратегии
+            self.clear_position_strategy(symbol)
                 
         except Exception as e:
             logger.error(f"[MANUAL CLOSE ERROR] Ошибка обработки ручного закрытия {symbol}: {e}", exc_info=True)
@@ -1129,6 +1157,8 @@ class PositionMonitor:
                 del self.highest_price[symbol]
             if symbol in self.lowest_price:
                 del self.lowest_price[symbol]
+            # Очищаем привязку стратегии
+            self.clear_position_strategy(symbol)
             
             # Mark as recently closed to prevent recovery
             self.recently_closed[symbol] = time.time()

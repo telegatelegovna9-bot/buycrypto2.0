@@ -564,6 +564,13 @@ class TradingBot:
                     if success:
                         logger.info(f"Successfully executed trade on {symbol}")
                         
+                        # ВАЖНО: Сообщаем PositionMonitor, какая стратегия открыла позицию
+                        # (берем первую стратегию из списка, так как позиция одна)
+                        primary_strategy = source_strategies[0] if source_strategies else 'Unknown'
+                        if hasattr(self.position_monitor, 'register_position_strategy'):
+                            self.position_monitor.register_position_strategy(symbol, primary_strategy)
+                            logger.debug(f"[STRATEGY] Позиция {symbol} привязана к стратегии {primary_strategy}")
+                        
                         # Notify via Telegram
                         await self.telegram.notify_entry(
                             symbol=symbol,
