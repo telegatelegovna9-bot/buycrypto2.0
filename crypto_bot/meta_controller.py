@@ -214,7 +214,7 @@ class MetaController:
         stats["total_pnl"] += pnl
         
         # Сохраняем обновленную статистику
-        self._save_strategy_stats()
+        # Сохранение будет вызвано внутри update_weights
         
         # Обновляем веса стратегий
         self.update_weights(

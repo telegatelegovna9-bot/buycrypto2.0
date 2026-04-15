@@ -327,13 +327,13 @@ class PositionMonitor:
                 
                 # Обновляем статистику
                 is_winner = pnl > 0
-                self.meta_controller.update_strategy_stats(
-                    strategy_name,
-                    is_winner,
-                    pnl,
-                    pnl_pct
-                )
-                logger.info(f"[STATS] Обновлена статистика для {strategy_name}: PnL={pnl:.2f}, Win={is_winner}")
+            #                 self.meta_controller.update_strategy_stats(
+            #                     strategy_name,
+            #                     is_winner,
+            #                     pnl,
+            #                     pnl_pct
+            #                 )
+            #                 logger.info(f"[STATS] Обновлена статистика для {strategy_name}: PnL={pnl:.2f}, Win={is_winner}")
             
             # Отправляем уведомление в Telegram
             if self.telegram:
