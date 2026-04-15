@@ -4,6 +4,7 @@ Handles real-time position monitoring, SL/TP checks, and dynamic management.
 Runs every 1 second for fast reaction to market changes.
 """
 import asyncio
+import time
 from typing import Dict, Optional, List
 from dataclasses import dataclass
 import logging
@@ -30,6 +31,7 @@ class PositionState:
     is_profitable: bool
     in_profit_zone: bool  # Price moved favorably by X%
     last_update: datetime
+    strategy: str = 'Unknown'  # Strategy that opened this position
 
 
 class PositionMonitor:
@@ -413,6 +415,20 @@ class PositionMonitor:
             if symbol not in self.lowest_price or current_price < self.lowest_price[symbol]:
                 self.lowest_price[symbol] = current_price
         
+        # Determine strategy from active signals
+        strategy_name = 'Unknown'
+        if hasattr(self.meta_controller, 'active_signals'):
+            signal = self.meta_controller.active_signals.get(symbol)
+            if signal and 'strategy' in signal:
+                strat_val = signal['strategy']
+                if isinstance(strat_val, list):
+                    for s in strat_val:
+                        if s and s != 'Unknown':
+                            strategy_name = s
+                            break
+                elif isinstance(strat_val, str) and strat_val and strat_val != 'Unknown':
+                    strategy_name = strat_val
+        
         state = PositionState(
             symbol=symbol,
             direction=position.direction,
@@ -427,7 +443,8 @@ class PositionMonitor:
             distance_to_tp_pct=distance_to_tp * 100,
             is_profitable=pnl_pct > 0,
             in_profit_zone=abs(pnl_pct) >= self.breakeven_threshold,
-            last_update=datetime.now()
+            last_update=datetime.now(),
+            strategy=strategy_name  # Save strategy name
         )
         
         self.position_states[symbol] = state
