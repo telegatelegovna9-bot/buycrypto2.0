@@ -216,9 +216,12 @@ class MetaController:
             pnl: Абсолютная прибыль/убыток в долларах
             pnl_pct: Процентная прибыль/убыток
         """
-        if not strategy_name or strategy_name == 'Unknown':
-            logger.warning(f"[STATS] Стратегия {strategy_name} не найдена, пропускаем обновление")
+        if not strategy_name:
+            logger.warning(f"[STATS] Пустое имя стратегии, пропускаем обновление")
             return
+        
+        # Разрешаем обновление для всех стратегий включая 'Unknown'
+        # чтобы отслеживать все сделки
         
         # Защита от дублирования обновлений для одной сделки
         dedup_key = f"{strategy_name}_{pnl}_{is_winner}"
