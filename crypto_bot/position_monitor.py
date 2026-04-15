@@ -152,6 +152,16 @@ class PositionMonitor:
                 
                 # Если позиция есть на бирже, но нет у бота → восстанавливаем
                 if symbol not in self.risk_manager.positions and position_size > 0:
+                    # ЗАЩИТА: Не восстанавливаем, если позиция в процессе закрытия
+                    if symbol in self.closing_positions:
+                        logger.debug(f"[SYNC] Позиция {symbol} в процессе закрытия, пропускаем восстановление")
+                        continue
+                    
+                    # ЗАЩИТА: Не восстанавливаем, если позиция недавно закрыта
+                    if symbol in self.recently_closed and (time.time() - self.recently_closed[symbol]) < 10.0:
+                        logger.debug(f"[SYNC] Позиция {symbol} недавно закрыта, пропускаем восстановление")
+                        continue
+                    
                     logger.warning(f"[SYNC] Обнаружена позиция на бирже, отсутствующая у бота: {symbol}")
                     # Бот восстановит контроль над этой позицией через update_position_from_exchange
                     await self._recover_position_from_exchange(symbol, pos_data)
