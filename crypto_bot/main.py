@@ -282,11 +282,22 @@ class TradingBot:
                         
                         pnl_pct = (pnl / (entry_price * amount)) * 100 if entry_price * amount > 0 else 0
                         
-                        # Determine strategy
-                        strategy_name = 'Unknown'
+                        # Determine strategy - NEVER allow 'Unknown' as fallback
+                        strategy_name = None
                         signal = self.active_signals.get(symbol)
                         if signal and 'strategy' in signal:
                             strategy_name = signal['strategy']
+                        
+                        # Fallback: check position_monitor's strategy map
+                        if not strategy_name or strategy_name == 'Unknown':
+                            if hasattr(self.position_monitor, 'position_strategies') and symbol in self.position_monitor.position_strategies:
+                                strategy_name = self.position_monitor.position_strategies[symbol]
+                                logger.info(f"[STRATEGY RECOVERED] Found '{strategy_name}' from position_monitor for {symbol}")
+                        
+                        # Final fallback: use 'System' instead of 'Unknown'
+                        if not strategy_name or strategy_name == 'Unknown':
+                            strategy_name = 'System'
+                            logger.warning(f"[FALLBACK] Using 'System' as default strategy for {symbol} (should not happen)")
                         
                         # Update strategy stats
                         is_winner = pnl > 0
@@ -484,7 +495,9 @@ class TradingBot:
             elif len(source_strategies) > 1:
                 source_strategy = f"Multi({len(source_strategies)})"
             else:
-                source_strategy = 'Unknown'
+                # Fallback для логирования - используем первую активную стратегию вместо Unknown
+                source_strategy = active_strategies[0] if active_strategies else 'System'
+                logger.warning(f"[FALLBACK LOG] No source_strategies for {symbol}, using '{source_strategy}' for logging")
             
             # Safe logging for symbols with non-ASCII characters
             try:
@@ -566,10 +579,18 @@ class TradingBot:
                         
                         # ВАЖНО: Сообщаем PositionMonitor, какая стратегия открыла позицию
                         # (берем первую стратегию из списка, так как позиция одна)
-                        primary_strategy = source_strategies[0] if source_strategies else 'Unknown'
+                        # КРИТИЧНО: Не допускаем 'Unknown' - каждая сделка должна иметь стратегию
+                        if not source_strategies:
+                            logger.error(f"[CRITICAL ERROR] No strategy found for {symbol}! Position should not be opened without a strategy.")
+                            # Используем первую активную стратегию как fallback вместо Unknown
+                            primary_strategy = active_strategies[0] if active_strategies else 'System'
+                            logger.warning(f"[FALLBACK] Using '{primary_strategy}' as default strategy for {symbol}")
+                        else:
+                            primary_strategy = source_strategies[0]
+                        
                         if hasattr(self.position_monitor, 'register_position_strategy'):
                             self.position_monitor.register_position_strategy(symbol, primary_strategy)
-                            logger.debug(f"[STRATEGY] Позиция {symbol} привязана к стратегии {primary_strategy}")
+                            logger.info(f"[STRATEGY REGISTERED] Позиция {symbol} привязана к стратегии {primary_strategy}")
                         
                         # Notify via Telegram
                         await self.telegram.notify_entry(
@@ -587,12 +608,20 @@ class TradingBot:
                         self.risk_manager.positions.pop(symbol, None)
                         continue
                 
-                # Track active signal with FULL strategy list
+                # Track active signal with FULL strategy list - NEVER allow 'Unknown'
+                if not source_strategies:
+                    # Fallback to first active strategy instead of Unknown
+                    fallback_strategy = active_strategies[0] if active_strategies else 'System'
+                    logger.warning(f"[FALLBACK] No source_strategies for {symbol}, using '{fallback_strategy}'")
+                    strategy_value = fallback_strategy
+                else:
+                    strategy_value = source_strategies if len(source_strategies) > 1 else source_strategies[0]
+                
                 self.active_signals[symbol] = {
                     'signal': {'direction': direction, 'entry': current_price, 'confidence': confidence},
                     'position': position,
                     'entry_time': datetime.now(),
-                    'strategy': source_strategies if len(source_strategies) > 1 else (source_strategies[0] if source_strategies else 'Unknown')
+                    'strategy': strategy_value
                 }
     
     async def manage_positions(self):

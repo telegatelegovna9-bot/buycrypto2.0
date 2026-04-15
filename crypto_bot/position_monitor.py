@@ -31,7 +31,7 @@ class PositionState:
     is_profitable: bool
     in_profit_zone: bool  # Price moved favorably by X%
     last_update: datetime
-    strategy: str = 'Unknown'  # Strategy that opened this position
+    strategy: str = 'System'  # Strategy that opened this position (default to 'System' instead of 'Unknown')
 
 
 class PositionMonitor:
@@ -91,7 +91,7 @@ class PositionMonitor:
     
     def get_position_strategy(self, symbol: str) -> str:
         """Get the strategy name for a position."""
-        return self.position_strategies.get(symbol, 'Unknown')
+        return self.position_strategies.get(symbol, 'System')  # Use 'System' instead of 'Unknown'
     
     def clear_position_strategy(self, symbol: str):
         """Clear strategy mapping after position is closed."""
@@ -289,51 +289,55 @@ class PositionMonitor:
             # Закрываем позицию локально
             self.risk_manager.close_position(symbol, close_price, 'manual_close')
             
-            # Обновляем статистику стратегии
+            # Обновляем статистику стратегии - КРИТИЧНО: НЕ допускаем 'Unknown'
             if self.meta_controller:
                 # Определяем стратегию, которая открыла сделку
-                # Ищем стратегию, которая открыла позицию
-                strategy_name = 'Unknown'
+                strategy_name = None
                 
-                # Попытка 1: Через position_strategies (НОВЫЙ надежный метод)
+                # Попытка 1: Через position_strategies (самый надежный метод)
                 if symbol in self.position_strategies:
                     strategy_name = self.position_strategies[symbol]
-                    logger.debug(f"[STRATEGY FOUND] {symbol} -> {strategy_name} (from position_strategies)")
+                    if strategy_name and strategy_name != 'Unknown':
+                        logger.info(f"[STRATEGY FOUND] {symbol} -> {strategy_name} (from position_strategies)")
                 
-                # Попытка 2: Через meta_controller.active_signals
-                if strategy_name == 'Unknown' and hasattr(self.meta_controller, 'active_signals'):
+                # Попытка 2: Через active_signals
+                if not strategy_name and hasattr(self.meta_controller, 'active_signals'):
                     signal = self.meta_controller.active_signals.get(symbol)
                     if signal and 'strategy' in signal:
                         strat_val = signal['strategy']
                         if isinstance(strat_val, list):
-                            # Берем первую не-Unknown стратегию из списка
                             for s in strat_val:
                                 if s and s != 'Unknown':
                                     strategy_name = s
                                     break
                         elif isinstance(strat_val, str) and strat_val and strat_val != 'Unknown':
                             strategy_name = strat_val
-                    if strategy_name != 'Unknown':
-                        logger.debug(f"[STRATEGY FOUND] {symbol} -> {strategy_name} (from active_signals)")
+                    if strategy_name:
+                        logger.info(f"[STRATEGY FOUND] {symbol} -> {strategy_name} (from active_signals)")
                 
-                # Попытка 3: Через position_states (если есть сохраненная стратегия)
-                if strategy_name == 'Unknown' and symbol in self.position_states:
+                # Попытка 3: Через position_states
+                if not strategy_name and symbol in self.position_states:
                     state = self.position_states[symbol]
-                    if hasattr(state, 'strategy') and state.strategy:
+                    if hasattr(state, 'strategy') and state.strategy and state.strategy != 'Unknown':
                         strategy_name = state.strategy
-                        logger.debug(f"[STRATEGY FOUND] {symbol} -> {strategy_name} (from position_states)")
+                        logger.info(f"[STRATEGY FOUND] {symbol} -> {strategy_name} (from position_states)")
+                
+                # КРИТИЧНО: Используем 'System' вместо 'Unknown' как последний fallback
+                if not strategy_name or strategy_name == 'Unknown':
+                    strategy_name = 'System'
+                    logger.error(f"[CRITICAL ERROR] Could not determine strategy for {symbol}, using 'System'. This should never happen!")
                 
                 logger.info(f"[STRATEGY DETECTED] {symbol}: {strategy_name}")
                 
                 # Обновляем статистику
                 is_winner = pnl > 0
-            #                 self.meta_controller.update_strategy_stats(
-            #                     strategy_name,
-            #                     is_winner,
-            #                     pnl,
-            #                     pnl_pct
-            #                 )
-            #                 logger.info(f"[STATS] Обновлена статистика для {strategy_name}: PnL={pnl:.2f}, Win={is_winner}")
+                self.meta_controller.update_strategy_stats(
+                    strategy_name,
+                    is_winner,
+                    pnl,
+                    pnl_pct
+                )
+                logger.info(f"[STATS] Обновлена статистика для {strategy_name}: PnL={pnl:.2f}, Win={is_winner}")
             
             # Отправляем уведомление в Telegram
             if self.telegram:
@@ -453,8 +457,8 @@ class PositionMonitor:
             if symbol not in self.lowest_price or current_price < self.lowest_price[symbol]:
                 self.lowest_price[symbol] = current_price
         
-        # Determine strategy from active signals
-        strategy_name = 'Unknown'
+        # Determine strategy from active signals - NEVER allow 'Unknown'
+        strategy_name = None
         if hasattr(self.meta_controller, 'active_signals'):
             signal = self.meta_controller.active_signals.get(symbol)
             if signal and 'strategy' in signal:
@@ -466,6 +470,17 @@ class PositionMonitor:
                             break
                 elif isinstance(strat_val, str) and strat_val and strat_val != 'Unknown':
                     strategy_name = strat_val
+        
+        # Fallback: check position_strategies map
+        if not strategy_name and symbol in self.position_strategies:
+            strategy_name = self.position_strategies[symbol]
+            if strategy_name and strategy_name != 'Unknown':
+                logger.debug(f"[STRATEGY RECOVERED] {symbol} -> {strategy_name} (from position_strategies)")
+        
+        # Final fallback: use 'System' instead of 'Unknown'
+        if not strategy_name or strategy_name == 'Unknown':
+            strategy_name = 'System'
+            logger.warning(f"[FALLBACK] Using 'System' as default strategy for {symbol} in PositionState")
         
         state = PositionState(
             symbol=symbol,
@@ -1126,18 +1141,18 @@ class PositionMonitor:
             pnl_pct = (pnl_calc / (entry_price * amount)) * 100 if entry_price * amount > 0 else 0
             is_winner = pnl_calc > 0
             
-            # Update strategy stats
+            # Update strategy stats - CRITICAL: NEVER allow 'Unknown'
             if self.meta_controller:
                 # Try to get strategy from position_states FIRST
-                strategy_name = 'Unknown'
+                strategy_name = None
                 if symbol in self.position_states:
                     state = self.position_states[symbol]
                     if hasattr(state, 'strategy') and state.strategy and state.strategy != 'Unknown':
                         strategy_name = state.strategy
                         logger.info(f"[STATS] Found strategy '{strategy_name}' from position_states for {symbol}")
                 
-                # Fallback: check active_signals if still Unknown
-                if strategy_name == 'Unknown' and hasattr(self.meta_controller, 'active_signals'):
+                # Fallback: check active_signals if still not found
+                if not strategy_name and hasattr(self.meta_controller, 'active_signals'):
                     signal = self.meta_controller.active_signals.get(symbol)
                     if signal:
                         # Handle both dict and object formats
@@ -1162,17 +1177,19 @@ class PositionMonitor:
                             elif isinstance(strat_val, str) and strat_val and strat_val != 'Unknown':
                                 strategy_name = strat_val
                         
-                        if strategy_name != 'Unknown':
+                        if strategy_name:
                             logger.info(f"[STATS] Recovered strategy '{strategy_name}' from active_signals for {symbol}")
                 
-                # Final fallback: check position_strategies map
-                if strategy_name == 'Unknown' and symbol in self.position_strategies:
+                # Final fallback: check position_strategies map (most reliable)
+                if not strategy_name and symbol in self.position_strategies:
                     strategy_name = self.position_strategies[symbol]
                     if strategy_name and strategy_name != 'Unknown':
                         logger.info(f"[STATS] Recovered strategy '{strategy_name}' from position_strategies for {symbol}")
                 
-                if strategy_name == 'Unknown':
-                    logger.warning(f"[STATS WARNING] Could not determine strategy for {symbol}, using 'Unknown'")
+                # CRITICAL: Use 'System' as final fallback instead of 'Unknown'
+                if not strategy_name or strategy_name == 'Unknown':
+                    strategy_name = 'System'
+                    logger.error(f"[CRITICAL ERROR] Could not determine strategy for {symbol}, using 'System' as fallback. This should never happen!")
                 
                 # Update stats with determined strategy
                 self.meta_controller.update_strategy_stats(
