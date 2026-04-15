@@ -7,6 +7,7 @@ import logging
 from typing import List, Dict, Optional
 import os
 import json
+import time
 from strategies.base_strategy import Signal, BaseStrategy
 from strategies.market_regime import MarketRegimeDetector
 from strategies.trend_breakout import TrendBreakoutStrategy
@@ -98,12 +99,26 @@ class MetaController:
             persisted_stats = payload.get("strategy_stats", {})
             persisted_weights = payload.get("strategy_weights", {})
 
+            # Update existing strategies with persisted data
             for strategy_name in self.strategy_stats.keys():
                 if strategy_name in persisted_stats and isinstance(persisted_stats[strategy_name], dict):
                     for key in ["wins", "losses", "total_pnl", "total_trades"]:
                         if key in persisted_stats[strategy_name]:
                             self.strategy_stats[strategy_name][key] = persisted_stats[strategy_name][key]
                 if strategy_name in persisted_weights:
+                    self.strategy_weights[strategy_name] = float(persisted_weights[strategy_name])
+            
+            # Add any new strategies from file that aren't in current instance (for backwards compatibility)
+            for strategy_name, stats in persisted_stats.items():
+                if strategy_name not in self.strategy_stats and isinstance(stats, dict):
+                    self.strategy_stats[strategy_name] = {
+                        "wins": stats.get("wins", 0),
+                        "losses": stats.get("losses", 0),
+                        "total_pnl": stats.get("total_pnl", 0.0),
+                        "total_trades": stats.get("total_trades", 0)
+                    }
+                    logger.info(f"Added strategy {strategy_name} from persisted stats")
+                if strategy_name not in self.strategy_weights and strategy_name in persisted_weights:
                     self.strategy_weights[strategy_name] = float(persisted_weights[strategy_name])
 
             logger.info(f"Loaded strategy stats from {self.stats_file}")
