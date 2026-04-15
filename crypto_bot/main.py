@@ -643,7 +643,8 @@ class TradingBot:
         
         # FALLBACK SAFETY NET: Check for critical SL/TP hits
         # (PositionMonitor should handle this, but this is a backup)
-        positions_to_close = []
+        # ОТКЛЮЧЕНО: Чтобы избежать дублирования закрытий с PositionMonitor
+        # Теперь только логируем события, но не закрываем позиции
         for symbol, position in list(self.risk_manager.positions.items()):
             current_price = prices.get(symbol)
             if not current_price:
@@ -653,12 +654,11 @@ class TradingBot:
             exit_reason = self.risk_manager.check_stop_loss_take_profit(symbol, current_price)
             
             if exit_reason:
-                logger.warning(f"[FALLBACK] {symbol} triggered {exit_reason} - PositionMonitor may have missed it")
-                positions_to_close.append((symbol, current_price, exit_reason))
+                logger.warning(f"[FALLBACK-LOG] {symbol} triggered {exit_reason} - Ожидает обработки PositionMonitor")
         
-        # Execute closures for positions that hit SL/TP
-        for symbol, close_price, exit_reason in positions_to_close:
-            await self._execute_position_closure(symbol, close_price, exit_reason)
+        # Execute closures for positions that hit SL/TP - ОТКЛЮЧЕНО
+        # positions_to_close = []
+        # ... (код закомментирован для предотвращения двойных закрытий)
         
     async def _execute_position_closure(self, symbol: str, close_price: float, exit_reason: str):
         """
