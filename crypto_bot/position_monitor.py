@@ -69,6 +69,10 @@ class PositionMonitor:
         
         # Sync state
         self.last_exchange_positions = {}
+        
+        # Protection against race conditions during position opening
+        self.opening_positions: Dict[str, datetime] = {}  # Symbols being opened + timestamp
+        self.OPENING_PROTECTION_SECONDS = 5.0  # Don't check manual close for 5s after open
     
     async def start_monitoring(self):
         """Start the position monitoring loop."""
@@ -162,7 +166,17 @@ class PositionMonitor:
             
             # Проверяем позиции, которые есть у бота, но отсутствуют на бирже
             # Это означает, что позиция была закрыта вручную или ликвидирована
+            current_time = datetime.now()
             for symbol in list(self.risk_manager.positions.keys()):
+                # ЗАЩИТА: Не проверяем ручное закрытие, если позиция только что открыта
+                if symbol in self.opening_positions:
+                    time_since_open = (current_time - self.opening_positions[symbol]).total_seconds()
+                    if time_since_open < self.OPENING_PROTECTION_SECONDS:
+                        continue  # Пропускаем проверку, позиция еще открывается
+                    else:
+                        # Удаляем из списка открываемых, если прошло больше 5 секунд
+                        del self.opening_positions[symbol]
+                
                 if symbol not in exchange_symbols:
                     logger.critical(f"[SYNC] Позиция {symbol} отсутствует на бирже! Вероятно, закрыта вручную.")
                     await self._handle_manually_closed_position(symbol)
@@ -235,12 +249,28 @@ class PositionMonitor:
             # Обновляем статистику стратегии
             if self.meta_controller:
                 # Определяем стратегию, которая открыла сделку
-                # Используем последнюю активную стратегию для этого символа
+                # Ищем в active_signals main.py (через meta_controller)
                 strategy_name = 'Unknown'
+                
+                # Попытка 1: Через meta_controller.active_signals
                 if hasattr(self.meta_controller, 'active_signals'):
                     signal = self.meta_controller.active_signals.get(symbol)
                     if signal and 'strategy' in signal:
-                        strategy_name = signal['strategy']
+                        strat_val = signal['strategy']
+                        if isinstance(strat_val, list):
+                            # Берем первую не-Unknown стратегию из списка
+                            for s in strat_val:
+                                if s and s != 'Unknown':
+                                    strategy_name = s
+                                    break
+                        elif isinstance(strat_val, str) and strat_val and strat_val != 'Unknown':
+                            strategy_name = strat_val
+                
+                # Попытка 2: Через position_states (если есть сохраненная стратегия)
+                if strategy_name == 'Unknown' and symbol in self.position_states:
+                    state = self.position_states[symbol]
+                    if hasattr(state, 'strategy') and state.strategy:
+                        strategy_name = state.strategy
                 
                 # Обновляем статистику
                 is_winner = pnl > 0

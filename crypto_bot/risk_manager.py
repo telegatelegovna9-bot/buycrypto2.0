@@ -282,6 +282,11 @@ class RiskManager:
         
         return position
     
+    def register_opening_position(self, symbol: str):
+        """Register that a position is being opened (for sync protection)."""
+        # This method is called by main.py to notify PositionMonitor
+        pass  # Implementation moved to PositionMonitor via callback
+    
     def update_positions(self, prices: Dict[str, float]):
         """Update all positions with current prices."""
         for symbol, position in self.positions.items():

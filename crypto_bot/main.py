@@ -549,6 +549,12 @@ class TradingBot:
                         'take_profit': position.take_profit
                     }
                     logger.info(f"Executing signal: {direction} on {symbol}, SL={position.stop_loss:.4f}, TP={position.take_profit:.4f}")
+                    
+                    # УВЕДОМЛЯЕМ PositionMonitor о начале открытия позиции (защита от ложного ручного закрытия)
+                    if hasattr(self.position_monitor, 'opening_positions'):
+                        self.position_monitor.opening_positions[symbol] = datetime.now()
+                        logger.debug(f"[PROTECT] Позиция {symbol} помечена как открываемая")
+                    
                     success = await self.execution_engine.execute_signal(
                         signal_dict,
                         position.size,
