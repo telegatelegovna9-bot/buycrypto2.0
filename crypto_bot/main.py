@@ -260,8 +260,62 @@ class TradingBot:
                     symbols_to_remove.append(symbol)
                     removed_count += 1
             
-            # Remove stale positions
+            # Remove stale positions and update stats/Telegram
             for symbol in symbols_to_remove:
+                # Get position data before removing
+                position = self.risk_manager.positions.get(symbol)
+                if position:
+                    # Calculate PnL at current price
+                    try:
+                        ticker = await self.data_loader.fetch_ticker(symbol)
+                        close_price = ticker.get('last', position.entry_price) if ticker else position.entry_price
+                        
+                        # Calculate PnL manually
+                        entry_price = position.entry_price
+                        amount = abs(position.size)
+                        side = position.direction
+                        
+                        if side == 'long':
+                            pnl = (close_price - entry_price) * amount
+                        else:  # short
+                            pnl = (entry_price - close_price) * amount
+                        
+                        pnl_pct = (pnl / (entry_price * amount)) * 100 if entry_price * amount > 0 else 0
+                        
+                        # Determine strategy
+                        strategy_name = 'Unknown'
+                        signal = self.active_signals.get(symbol)
+                        if signal and 'strategy' in signal:
+                            strategy_name = signal['strategy']
+                        
+                        # Update strategy stats
+                        is_winner = pnl > 0
+                        if hasattr(self.meta_controller, 'update_strategy_stats'):
+                            self.meta_controller.update_strategy_stats(
+                                strategy_name,
+                                is_winner,
+                                pnl,
+                                pnl_pct
+                            )
+                            logger.info(f"[STATS] Updated stats for {strategy_name}: PnL={pnl:.2f}, Win={is_winner}")
+                        
+                        # Send Telegram notification
+                        if self.telegram_notifier:
+                            balance = self.risk_manager.current_balance
+                            await self.telegram_notifier.notify_exit(
+                                symbol=symbol,
+                                direction=side,
+                                entry_price=entry_price,
+                                exit_price=close_price,
+                                pnl=pnl,
+                                pnl_pct=pnl_pct,
+                                reason='Ручное закрытие (синхронизация)',
+                                balance=balance
+                            )
+                            logger.info(f"[TG] Notification sent for manual close of {symbol}")
+                    except Exception as e:
+                        logger.error(f"[SYNC CLOSE ERROR] Error processing {symbol}: {e}")
+                
                 # Remove from risk manager
                 self.risk_manager.positions.pop(symbol, None)
                 # Remove from active signals

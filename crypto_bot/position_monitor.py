@@ -215,9 +215,17 @@ class PositionMonitor:
             ticker = await self.data_loader.fetch_ticker(symbol)
             close_price = ticker.get('last', position.entry_price) if ticker else position.entry_price
             
-            # Вычисляем PnL
-            pnl = position.get_pnl(close_price)
-            pnl_pct = position.get_pnl_pct(close_price)
+            # Вычисляем PnL вручную (безопасный способ без get_pnl)
+            entry_price = position.entry_price
+            amount = abs(position.size)
+            side = position.direction
+            
+            if side == 'long':
+                pnl = (close_price - entry_price) * amount
+            else:  # short
+                pnl = (entry_price - close_price) * amount
+            
+            pnl_pct = (pnl / (entry_price * amount)) * 100 if entry_price * amount > 0 else 0
             
             logger.critical(f"[MANUAL CLOSE] {symbol} закрыта вручную. PnL: ${pnl:.2f} ({pnl_pct:+.2%})")
             
