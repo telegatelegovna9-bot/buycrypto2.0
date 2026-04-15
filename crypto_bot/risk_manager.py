@@ -35,6 +35,13 @@ class Position:
             return (current_price - self.entry_price) / self.entry_price
         else:
             return (self.entry_price - current_price) / self.entry_price
+    
+    def get_pnl(self, current_price: float) -> float:
+        """Get absolute PnL in quote currency."""
+        if self.direction == 'long':
+            return (current_price - self.entry_price) * self.size
+        else:
+            return (self.entry_price - current_price) * self.size
 
 
 class RiskManager:
