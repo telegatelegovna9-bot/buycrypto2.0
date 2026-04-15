@@ -73,6 +73,11 @@ class PositionMonitor:
         # Protection against race conditions during position opening
         self.opening_positions: Dict[str, datetime] = {}  # Symbols being opened + timestamp
         self.OPENING_PROTECTION_SECONDS = 5.0  # Don't check manual close for 5s after open
+        
+        # Protection against double closing and false recovery
+        self.closing_positions: Dict[str, datetime] = {}  # Symbols being closed + timestamp
+        self.recently_closed: Dict[str, datetime] = {}    # Symbols recently closed + timestamp
+        self.CLOSING_PROTECTION_SECONDS = 10.0  # Don't recover for 10s after close
     
     async def start_monitoring(self):
         """Start the position monitoring loop."""
