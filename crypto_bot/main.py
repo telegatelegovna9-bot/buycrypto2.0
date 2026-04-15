@@ -608,7 +608,9 @@ class TradingBot:
         
         # Fetch current prices for status logging
         prices = {}
-        for symbol in self.risk_manager.positions.keys():
+        # Use list() to avoid "dictionary changed size during iteration" error
+        position_symbols = list(self.risk_manager.positions.keys())
+        for symbol in position_symbols:
             try:
                 ticker = await self.data_loader.fetch_ticker(symbol)
                 if ticker and 'last' in ticker:

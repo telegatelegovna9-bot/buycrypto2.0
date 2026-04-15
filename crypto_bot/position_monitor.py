@@ -1040,6 +1040,9 @@ class PositionMonitor:
         logger.critical(f"[SL/TP HIT] {symbol}: {exit_reason} @ {close_price}")
         
         try:
+            # Mark as closing to prevent sync issues
+            self.closing_positions[symbol] = True
+            
             # Close on exchange (in live mode)
             if not self.config.exchange.sandbox:
                 close_price_exchange = await self.order_executor.close_position(symbol)
@@ -1048,22 +1051,59 @@ class PositionMonitor:
                     logger.critical(f"[CLOSE OK] {symbol} closed on exchange @ {close_price_exchange}")
                 else:
                     logger.error(f"[CLOSE FAIL] Failed to close {symbol} on exchange")
+                    if symbol in self.closing_positions:
+                        del self.closing_positions[symbol]
                     return
             
             # Close locally in risk manager
             pnl = self.risk_manager.close_position(symbol, close_price, exit_reason)
             
+            # Calculate PnL percentage
+            entry_price = position.entry_price
+            amount = abs(position.size)
+            side = position.direction
+            
+            if side == 'long':
+                pnl_calc = (close_price - entry_price) * amount
+            else:  # short
+                pnl_calc = (entry_price - close_price) * amount
+            
+            pnl_pct = (pnl_calc / (entry_price * amount)) * 100 if entry_price * amount > 0 else 0
+            is_winner = pnl_calc > 0
+            
             # Update strategy stats
-            if symbol in self.risk_manager.closed_trades and self.risk_manager.closed_trades:
-                last_trade = self.risk_manager.closed_trades[-1]
-                is_winner = pnl > 0
+            if self.meta_controller:
+                # Try to get strategy from position_states
+                strategy_name = 'Unknown'
+                if symbol in self.position_states:
+                    state = self.position_states[symbol]
+                    if hasattr(state, 'strategy') and state.strategy:
+                        strategy_name = state.strategy
                 
-                # Get strategy from active signals if available
-                strategies_used = []
-                # Note: We don't have direct access to active_signals here
-                # The main loop will handle strategy stats update
+                self.meta_controller.update_strategy_stats(
+                    strategy_name,
+                    is_winner,
+                    pnl_calc,
+                    pnl_pct
+                )
+                logger.info(f"[STATS UPDATED] {strategy_name}: PnL={pnl_calc:.2f}, Win={is_winner}, Reason={exit_reason}")
+            
+            # Send Telegram notification
+            if self.telegram:
+                balance = self.risk_manager.get_balance()
+                direction = position.direction
                 
-                logger.info(f"[STATS] {symbol} closed: PnL={pnl:.2f}, Win={is_winner}, Reason={exit_reason}")
+                await self.telegram.notify_exit(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=position.entry_price,
+                    exit_price=close_price,
+                    pnl=pnl_calc,
+                    pnl_pct=pnl_pct,
+                    reason=exit_reason,
+                    balance=balance
+                )
+                logger.info(f"[TG] Уведомление отправлено о закрытии {symbol} по {exit_reason}")
             
             # Remove from tracking
             if symbol in self.position_states:
@@ -1072,9 +1112,18 @@ class PositionMonitor:
                 del self.highest_price[symbol]
             if symbol in self.lowest_price:
                 del self.lowest_price[symbol]
+            
+            # Mark as recently closed to prevent recovery
+            self.recently_closed[symbol] = time.time()
+            
+            # Remove from closing positions
+            if symbol in self.closing_positions:
+                del self.closing_positions[symbol]
                 
         except Exception as e:
             logger.error(f"[SL/TP CLOSE ERROR] {symbol}: {e}", exc_info=True)
+            if symbol in self.closing_positions:
+                del self.closing_positions[symbol]
     
     async def _check_partial_close(
         self,
