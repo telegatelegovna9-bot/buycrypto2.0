@@ -704,13 +704,14 @@ class TradingBot:
                         elif isinstance(strat, str) and strat != 'Unknown':
                             strategies_used = [strat]
             
-            # Update strategy performance
+            # Update strategy performance - используем только update_strategy_stats для избежания дублирования
             is_winner = pnl > 0
             if strategies_used:
                 for strategy_name in strategies_used:
                     if strategy_name and strategy_name != 'Unknown':
-                        self.meta_controller.update_strategy_performance(
-                            strategy_name, pnl, is_winner, exit_reason
+                        # Используем напрямую update_strategy_stats чтобы избежать дублирования wins/losses
+                        self.meta_controller.update_strategy_stats(
+                            strategy_name, is_winner, pnl, 0.0
                         )
                         logger.info(f"[STATS UPDATED] {strategy_name}: PnL={pnl:.2f}, Win={is_winner}, Reason={exit_reason}")
             else:
@@ -718,8 +719,8 @@ class TradingBot:
                 position_obj = self.risk_manager.positions.get(symbol) if symbol in self.risk_manager.positions else None
                 if position_obj:
                     default_strategy = f"Default_{position_obj.direction}"
-                    self.meta_controller.update_strategy_performance(
-                        default_strategy, pnl, is_winner, exit_reason
+                    self.meta_controller.update_strategy_stats(
+                        default_strategy, is_winner, pnl, 0.0
                     )
                     logger.warning(f"[STATS WARNING] No strategy found for {symbol}, using {default_strategy}: PnL={pnl:.2f}, Win={is_winner}")
                 else:

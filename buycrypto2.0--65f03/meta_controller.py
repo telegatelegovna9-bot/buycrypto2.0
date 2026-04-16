@@ -152,7 +152,7 @@ class MetaController:
             stats["losses"] += 1
             
         stats["total_pnl"] += pnl
-        # total_trades уже увеличен в update_strategy_stats(), не дублируем
+        stats["total_trades"] += 1
         
         # Adaptive weight adjustment (only after 5+ trades)
         total_trades = stats["total_trades"]
@@ -208,19 +208,41 @@ class MetaController:
         # Обновляем счетчики
         stats = self.strategy_stats[strategy_name]
         stats["total_trades"] += 1
-
-        # Обновляем total_pnl
         stats["total_pnl"] += pnl
+        
+        # Увеличиваем wins/losses напрямую здесь, чтобы избежать дублирования
+        if is_winner:
+            stats["wins"] += 1
+        else:
+            stats["losses"] += 1
 
-        # Обновляем веса стратегий (внутри уже есть увеличение wins/losses и _save_strategy_stats)
-        # НЕ увеличиваем wins/losses здесь, это делает update_weights!
-        self.update_weights(
-            strategy_name=strategy_name,
-            is_win=is_winner,
-            pnl=pnl,
-            exit_reason='manual_close'
-        )
+        # Адаптивная корректировка веса (только после 5+ трейдов)
+        total_trades = stats["total_trades"]
+        if total_trades >= 5:
+            winrate = stats["wins"] / total_trades
+            
+            if winrate > 0.6:
+                self.strategy_weights[strategy_name] = min(2.0, self.strategy_weights[strategy_name] * 1.05)
+                logger.debug(f"Increased weight for {strategy_name} to {self.strategy_weights[strategy_name]:.2f}")
+            elif winrate < 0.4:
+                self.strategy_weights[strategy_name] = max(0.1, self.strategy_weights[strategy_name] * 0.95)
+                logger.debug(f"Decreased weight for {strategy_name} to {self.strategy_weights[strategy_name]:.2f}")
 
+        # Сохраняем статистику
+        self._save_strategy_stats()
+        
+        # Проверка что файл действительно обновился
+        try:
+            with open(self.stats_file, "r", encoding="utf-8") as f:
+                saved_data = json.load(f)
+                saved_stats = saved_data.get("strategy_stats", {}).get(strategy_name, {})
+                logger.info(
+                    f"[STATS VERIFY] Файл обновлен: {strategy_name} -> wins={saved_stats.get('wins')}, "
+                    f"losses={saved_stats.get('losses')}, total_pnl={saved_stats.get('total_pnl')}"
+                )
+        except Exception as e:
+            logger.error(f"[STATS VERIFY ERROR] Не удалось проверить файл: {e}")
+        
         logger.info(
             f"[STATS UPDATED] {strategy_name}: Trades={stats['total_trades']}, "
             f"Wins={stats['wins']}, Losses={stats['losses']}, PnL=${stats['total_pnl']:.2f}"

@@ -46,6 +46,7 @@ class ExecutionEngine:
                 'options': {
                     'defaultType': 'future',
                     'adjustForTimeDifference': True,  # Авто-коррекция времени
+                    'recvWindow': 60000,  # 60 секунд окно для timestamp
                 },
                 'timeout': 30000,
                 'retries': 5,
@@ -56,6 +57,15 @@ class ExecutionEngine:
                 base_config['proxy'] = self.exchange_config.proxy_url
             
             self.exchange = getattr(ccxt, self.exchange_config.exchange_id)(base_config)
+            
+            # Принудительная синхронизация времени перед началом работы
+            try:
+                logger.info("[EXEC] Syncing time with Binance server...")
+                await self.exchange.load_time_difference()
+                logger.info(f"[EXEC] Time offset: {self.exchange.timeframe_offset}ms")
+            except Exception as e:
+                logger.warning(f"[EXEC] Time sync failed: {e}, continuing with auto-adjust")
+            
             self.binance_api = BinanceFuturesAPI(
                 api_key=self.exchange_config.api_key,
                 secret_key=self.exchange_config.api_secret
