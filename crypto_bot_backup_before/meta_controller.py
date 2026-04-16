@@ -64,15 +64,16 @@ class MetaController:
             for s in self.strategies
         }
         
-        # Regime to strategy mapping
+        # Regime to strategy mapping - ALL strategies active in ALL regimes
+        # Each strategy will generate signals independently, MetaController aggregates them
         self.regime_map = {
-            "TREND_UP": ["TrendBreakout", "Momentum"],
-            "TREND_DOWN": ["TrendBreakout", "Momentum"],
-            "RANGE": ["MeanReversion", "LiquidityGrab", "RangeTrading"],
-            "LOW_VOL": ["VolatilityBreakout"],
-            "HIGH_VOL": ["Momentum", "TrendBreakout", "VolatilityBreakout"],
-            "ACCUMULATION": ["VolumeSpike", "VolatilityBreakout", "VolumeStrategy"],
-            "UNKNOWN": ["MeanReversion", "LiquidityGrab", "RangeTrading"]
+            "TREND_UP": [s.name for s in self.strategies],      # All 9 strategies
+            "TREND_DOWN": [s.name for s in self.strategies],    # All 9 strategies
+            "RANGE": [s.name for s in self.strategies],         # All 9 strategies
+            "LOW_VOL": [s.name for s in self.strategies],       # All 9 strategies
+            "HIGH_VOL": [s.name for s in self.strategies],      # All 9 strategies
+            "ACCUMULATION": [s.name for s in self.strategies],  # All 9 strategies
+            "UNKNOWN": [s.name for s in self.strategies]        # All 9 strategies
         }
         
         # Minimum confidence threshold for trading

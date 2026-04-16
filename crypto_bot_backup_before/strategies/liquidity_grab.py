@@ -88,20 +88,20 @@ class LiquidityGrabStrategy(BaseStrategy):
                 timestamp=timestamp
             )
 
-        # Calculate SL/TP
+        # Calculate SL/TP - INCREASED SL to 2.5x ATR
         atr = calculate_atr(df, 14)
         current_atr = atr.iloc[-1]
         
         if current_atr > 0:
             if direction == 'long':
-                stop_loss = last_candle['low'] - 0.5 * current_atr
+                stop_loss = last_candle['low'] - 2.5 * current_atr  # Increased from 0.5x to 2.5x ATR
                 take_profit = current_price + 3 * current_atr
             else:
-                stop_loss = last_candle['high'] + 0.5 * current_atr
+                stop_loss = last_candle['high'] + 2.5 * current_atr  # Increased from 0.5x to 2.5x ATR
                 take_profit = current_price - 3 * current_atr
         else:
-            sl_pct = 0.015
-            tp_pct = 0.045
+            sl_pct = 0.025  # Increased from 1.5% to 2.5%
+            tp_pct = 0.075  # 1:3 RR
             if direction == 'long':
                 stop_loss = current_price * (1 - sl_pct)
                 take_profit = current_price * (1 + tp_pct)

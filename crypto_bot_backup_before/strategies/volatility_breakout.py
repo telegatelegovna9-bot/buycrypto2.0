@@ -179,8 +179,8 @@ class VolatilityBreakoutStrategy(BaseStrategy):
                 }
             )
         
-        # Calculate SL/TP based on ATR and Bollinger Bands
-        atr_multiplier = 2.0
+        # Calculate SL/TP based on ATR and Bollinger Bands - INCREASED SL to 2.5x ATR
+        atr_multiplier = 2.5  # Increased from 2.0 to reduce premature SL hits
         if direction == 'long':
             stop_loss = max(lower.iloc[-1], current_price - atr_multiplier * current_atr)
             take_profit = current_price + (current_price - stop_loss) * 2.5  # 1:2.5 RR

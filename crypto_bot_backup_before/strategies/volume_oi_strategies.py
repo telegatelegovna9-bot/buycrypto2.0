@@ -167,12 +167,12 @@ class VolumeStrategy(BaseStrategy):
                 }
             )
         
-        # Calculate stop loss and take profit
+        # Calculate stop loss and take profit - INCREASED SL to 2.5x ATR
         if direction == 'long':
-            stop_loss = current_price - 1.5 * atr
+            stop_loss = current_price - 2.5 * atr  # Increased from 1.5x to reduce premature SL hits
             take_profit = current_price + 3 * atr  # 1:2 RR
         else:  # short
-            stop_loss = current_price + 1.5 * atr
+            stop_loss = current_price + 2.5 * atr  # Increased from 1.5x
             take_profit = current_price - 3 * atr  # 1:2 RR
         
         return Signal(
@@ -273,14 +273,14 @@ class OpenInterestStrategy(BaseStrategy):
                 }
             )
         
-        # Calculate SL/TP
+        # Calculate SL/TP - INCREASED SL to 2.5x ATR
         atr = calculate_atr(df, 14).iloc[-1]
         
         if direction == 'long':
-            stop_loss = current_price - 2 * atr
+            stop_loss = current_price - 2.5 * atr  # Increased from 2x to reduce premature SL hits
             take_profit = current_price + 4 * atr
         else:  # short
-            stop_loss = current_price + 2 * atr
+            stop_loss = current_price + 2.5 * atr  # Increased from 2x
             take_profit = current_price - 4 * atr
         
         return Signal(

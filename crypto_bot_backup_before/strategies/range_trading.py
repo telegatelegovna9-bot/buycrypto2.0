@@ -155,16 +155,16 @@ class RangeTradingStrategy(BaseStrategy):
                 }
             )
         
-        # Calculate stop loss and take profit
+        # Calculate stop loss and take profit - INCREASED SL to 2.5x ATR
         # For long: SL below support, TP at resistance or middle
         # For short: SL above resistance, TP at support or middle
         range_middle = (support + resistance) / 2
         
         if direction == 'long':
-            stop_loss = support - atr  # Below support
+            stop_loss = support - 2.5 * atr  # Increased from 1x to 2.5x ATR to reduce premature SL hits
             take_profit = min(resistance, range_middle + (range_middle - support))  # At least 1:2 RR
         else:  # short
-            stop_loss = resistance + atr  # Above resistance
+            stop_loss = resistance + 2.5 * atr  # Increased from 1x to 2.5x ATR
             take_profit = max(support, range_middle - (resistance - range_middle))  # At least 1:2 RR
         
         # Ensure minimum RR ratio
