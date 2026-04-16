@@ -436,13 +436,18 @@ class ExecutionEngine:
         except Exception as e:
             logger.error(f"Error cancelling orders for {symbol}: {e}")
             return None
-    async def close_position(self, symbol: str) -> float:
+    async def close_position(self, symbol: str, return_result: bool = False):
         """
         Close existing position at market price.
         CRITICAL FIX: Correctly determine close side to REDUCE position, not increase it.
         
+        Args:
+            symbol: Trading pair symbol
+            return_result: If True, return dict with detailed execution info instead of just price
+        
         Returns:
-            Close price or 0 if failed
+            If return_result=False: Close price (float) or 0 if failed
+            If return_result=True: Dict with executed_price, executed_size, etc.
         """
         if not self._initialized:
             await self.initialize()
@@ -460,7 +465,7 @@ class ExecutionEngine:
             
             if not position:
                 logger.info(f"No open position to close for {symbol}")
-                return 0.0
+                return 0.0 if not return_result else {}
             
             contracts = abs(float(position.get('contracts', 0)))
             side = str(position.get('side', '')).lower()
@@ -488,7 +493,7 @@ class ExecutionEngine:
             
             if amount <= 0:
                 logger.warning(f"Invalid position amount: {amount}")
-                return 0.0
+                return 0.0 if not return_result else {}
             
             # Cancel existing SL/TP orders first to avoid conflicts
             await self.cancel_all_orders(symbol)
@@ -510,15 +515,28 @@ class ExecutionEngine:
             
             if order:
                 close_price = order.get('average', order.get('price', 0.0))
+                executed_size = order.get('filled', order.get('amount', amount))
+                
                 logger.info(f"[CLOSE OK] Closed {side.upper()} position on {symbol}: {amount} @ {close_price} ({close_side.upper()})")
-                return close_price
+                
+                if return_result:
+                    # Return detailed execution info for accurate PnL calculation
+                    return {
+                        'executed_price': close_price,
+                        'executed_size': executed_size,
+                        'side': close_side,
+                        'timestamp': order.get('timestamp', None),
+                        'raw_order': order
+                    }
+                else:
+                    return close_price
             
             logger.error(f"Order returned None for {symbol}")
-            return 0.0
+            return 0.0 if not return_result else {}
             
         except Exception as e:
             logger.error(f"CRITICAL ERROR closing position: {e}", exc_info=True)
-            return 0.0
+            return 0.0 if not return_result else {}
     
     async def execute_signal(
         self, 

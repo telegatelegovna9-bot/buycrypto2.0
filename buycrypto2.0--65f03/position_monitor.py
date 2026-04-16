@@ -60,7 +60,7 @@ class PositionMonitor:
         self.monitor_task = None
         
         # Configuration
-        self.monitor_interval = 1.0  # Check every 1 second (CRITICAL for fast SL)
+        self.monitor_interval = 0.3  # Check every 300ms for faster SL/TP reaction (OPTIMIZED)
         self.breakeven_threshold = 0.025  # Move to BE when 2.5% profitable (OPTIMIZED)
         self.trailing_activation = 0.03  # Start trailing when 3% profitable
         self.trailing_stop_atr_multiplier = 2.5  # Wider trail to avoid premature exits
@@ -172,8 +172,10 @@ class PositionMonitor:
                 if symbol not in self.risk_manager.positions and position_size > 0:
                     # ЗАЩИТА: Не восстанавливаем, если позиция в процессе закрытия
                     if symbol in self.closing_positions:
-                        logger.debug(f"[SYNC] Позиция {symbol} в процессе закрытия, пропускаем восстановление")
-                        continue
+                        elapsed = time.time() - self.closing_positions[symbol]
+                        if elapsed < 5.0:  # If closing started less than 5s ago, skip
+                            logger.debug(f"[SYNC] Позиция {symbol} в процессе закрытия ({elapsed:.1f}s), пропускаем восстановление")
+                            continue
                     
                     # ЗАЩИТА: Не восстанавливаем, если позиция недавно закрыта
                     if symbol in self.recently_closed and (time.time() - self.recently_closed[symbol]) < 10.0:
@@ -1091,40 +1093,77 @@ class PositionMonitor:
         """
         Execute closure when SL or TP is hit.
         Closes position on exchange and updates local state.
+        
+        CRITICAL FIX: Uses actual execution price from exchange to avoid PnL discrepancies.
         """
         logger.critical(f"[SL/TP HIT] {symbol}: {exit_reason} @ {close_price}")
         
         try:
             # Mark as closing to prevent sync issues
-            self.closing_positions[symbol] = True
+            self.closing_positions[symbol] = time.time()  # Use timestamp for better tracking
             
-            # Close on exchange (in live mode)
+            # ============================================
+            # STEP 1: Get the ACTUAL execution price from exchange
+            # ============================================
+            actual_close_price = close_price
+            exchange_execution_confirmed = False
+            
             if not self.config.exchange.sandbox:
-                close_price_exchange = await self.order_executor.close_position(symbol)
-                if close_price_exchange > 0:
-                    close_price = close_price_exchange
-                    logger.critical(f"[CLOSE OK] {symbol} closed on exchange @ {close_price_exchange}")
+                # Close on exchange and get REAL execution price
+                close_result = await self.order_executor.close_position(symbol, return_result=True)
+                
+                if close_result and isinstance(close_result, dict):
+                    # Got detailed result with execution info
+                    actual_close_price = close_result.get('executed_price', close_result.get('price', close_price))
+                    executed_size = close_result.get('executed_size', position.size)
+                    exchange_execution_confirmed = True
+                    logger.critical(f"[CLOSE OK] {symbol} closed on exchange @ {actual_close_price} (size: {executed_size})")
+                elif close_result > 0:
+                    # Got simple price response
+                    actual_close_price = close_result
+                    exchange_execution_confirmed = True
+                    logger.critical(f"[CLOSE OK] {symbol} closed on exchange @ {actual_close_price}")
                 else:
                     logger.error(f"[CLOSE FAIL] Failed to close {symbol} on exchange")
                     if symbol in self.closing_positions:
                         del self.closing_positions[symbol]
                     return
             
-            # Close locally in risk manager
-            pnl = self.risk_manager.close_position(symbol, close_price, exit_reason)
+            # ============================================
+            # STEP 2: Fetch final ticker price as backup verification
+            # ============================================
+            try:
+                ticker = await self.data_loader.fetch_ticker(symbol)
+                if ticker:
+                    ticker_price = ticker.get('last', ticker.get('mark', actual_close_price))
+                    # Use ticker price if it's more recent (for sandbox mode or as verification)
+                    if not exchange_execution_confirmed:
+                        actual_close_price = ticker_price
+                        logger.info(f"[PRICE VERIFY] Using ticker price {actual_close_price} for {symbol}")
+                    else:
+                        logger.debug(f"[PRICE VERIFY] Exchange: {actual_close_price}, Ticker: {ticker_price}")
+            except Exception as e:
+                logger.warning(f"[PRICE VERIFY] Could not fetch ticker for {symbol}: {e}")
             
-            # Calculate PnL percentage
+            # ============================================
+            # STEP 3: Close locally with ACTUAL execution price
+            # ============================================
+            pnl = self.risk_manager.close_position(symbol, actual_close_price, exit_reason)
+            
+            # Calculate PnL percentage using ACTUAL execution price
             entry_price = position.entry_price
             amount = abs(position.size)
             side = position.direction
             
             if side == 'long':
-                pnl_calc = (close_price - entry_price) * amount
+                pnl_calc = (actual_close_price - entry_price) * amount
             else:  # short
-                pnl_calc = (entry_price - close_price) * amount
+                pnl_calc = (entry_price - actual_close_price) * amount
             
             pnl_pct = (pnl_calc / (entry_price * amount)) * 100 if entry_price * amount > 0 else 0
             is_winner = pnl_calc > 0
+            
+            logger.critical(f"[PnL CALC] {symbol}: Entry={entry_price}, Exit={actual_close_price}, PnL=${pnl_calc:.2f} ({pnl_pct:+.2%})")
             
             # Update strategy stats
             if self.meta_controller:
@@ -1192,7 +1231,7 @@ class PositionMonitor:
                     symbol=symbol,
                     direction=direction,
                     entry_price=position.entry_price,
-                    exit_price=close_price,
+                    exit_price=actual_close_price,  # Use ACTUAL execution price
                     pnl=pnl_calc,
                     pnl_pct=pnl_pct,
                     reason=exit_reason,
