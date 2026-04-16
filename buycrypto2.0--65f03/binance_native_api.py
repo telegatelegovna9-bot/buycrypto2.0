@@ -23,24 +23,42 @@ class BinanceFuturesAPI:
         self.secret_key = secret_key
         self.base_url = "https://fapi.binance.com"
         self.session: Optional[aiohttp.ClientSession] = None
+        self.time_offset: int = 0  # Time offset from Binance server in ms
         
     async def start_session(self):
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
+            # Sync time with Binance server on startup
+            await self._sync_time()
             
     async def close_session(self):
         if self.session and not self.session.closed:
             await self.session.close()
+    
+    async def _sync_time(self):
+        """Sync local time with Binance server time."""
+        try:
+            async with self.session.get(f"{self.base_url}/fapi/v1/time") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    server_time = data.get('serverTime', 0)
+                    local_time = int(time.time() * 1000)
+                    self.time_offset = server_time - local_time
+                    logger.info(f"[TIME SYNC] Server: {server_time}, Local: {local_time}, Offset: {self.time_offset}ms")
+        except Exception as e:
+            logger.warning(f"[TIME SYNC] Failed to sync time: {e}")
+            self.time_offset = 0
             
+    def _get_timestamp(self) -> int:
+        """Get current timestamp with offset correction."""
+        return int(time.time() * 1000) + self.time_offset
+        
     def _generate_signature(self, query_string: str) -> str:
         return hmac.new(
             self.secret_key.encode('utf-8'),
             query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
-        
-    def _get_timestamp(self) -> int:
-        return int(time.time() * 1000)
         
     def _safe_preview(self, text: str, limit: int = 300) -> str:
         compact = " ".join(text.split())
@@ -66,6 +84,7 @@ class BinanceFuturesAPI:
             
         if signed:
             params['timestamp'] = self._get_timestamp()
+            params['recvWindow'] = 10000  # 10 seconds window for timestamp
             query_string = urlencode(params)
             params['signature'] = self._generate_signature(query_string)
             

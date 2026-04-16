@@ -77,7 +77,7 @@ class MetaController:
         }
         
         # Minimum confidence threshold for trading
-        self.min_confidence = 0.65  # Increased from 0.5 to reduce false signals
+        self.min_confidence = 0.60  # Reduced from 0.65 to allow more signals from all 9 strategies
 
         # Persistent stats storage (survives bot restart)
         default_stats_file = os.path.join(os.path.dirname(__file__), "data", "strategy_stats.json")
@@ -209,14 +209,11 @@ class MetaController:
         stats = self.strategy_stats[strategy_name]
         stats["total_trades"] += 1
 
-        if is_winner:
-            stats["wins"] += 1
-        else:
-            stats["losses"] += 1
-
+        # Обновляем total_pnl
         stats["total_pnl"] += pnl
 
-        # Обновляем веса стратегий (внутри уже есть _save_strategy_stats)
+        # Обновляем веса стратегий (внутри уже есть увеличение wins/losses и _save_strategy_stats)
+        # НЕ увеличиваем wins/losses здесь, это делает update_weights!
         self.update_weights(
             strategy_name=strategy_name,
             is_win=is_winner,
