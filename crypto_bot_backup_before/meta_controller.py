@@ -16,6 +16,7 @@ from strategies.liquidity_grab import LiquidityGrabStrategy
 from strategies.mean_reversion import MeanReversionStrategy
 from strategies.momentum import MomentumStrategy
 from strategies.volume_oi_strategies import VolumeStrategy, OpenInterestStrategy
+from strategies.range_trading import RangeTradingStrategy
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class MetaController:
             MomentumStrategy({'momentum_period': 5, 'min_momentum': 0.02}),
             VolumeStrategy({'volume_ma_period': 20, 'volume_spike_threshold': 2.0}),
             OpenInterestStrategy({'oi_ma_period': 20, 'oi_change_threshold': 0.15}),
+            RangeTradingStrategy({'rsi_period': 14, 'range_window': 20}),
         ]
         
         # Initial equal weights for all strategies
@@ -66,15 +68,15 @@ class MetaController:
         self.regime_map = {
             "TREND_UP": ["TrendBreakout", "Momentum"],
             "TREND_DOWN": ["TrendBreakout", "Momentum"],
-            "RANGE": ["MeanReversion", "LiquidityGrab"],
+            "RANGE": ["MeanReversion", "LiquidityGrab", "RangeTrading"],
             "LOW_VOL": ["VolatilityBreakout"],
-            "HIGH_VOL": ["Momentum", "TrendBreakout"],
-            "ACCUMULATION": ["VolumeSpike", "VolatilityBreakout"],
-            "UNKNOWN": ["MeanReversion", "LiquidityGrab"]
+            "HIGH_VOL": ["Momentum", "TrendBreakout", "VolatilityBreakout"],
+            "ACCUMULATION": ["VolumeSpike", "VolatilityBreakout", "VolumeStrategy"],
+            "UNKNOWN": ["MeanReversion", "LiquidityGrab", "RangeTrading"]
         }
         
         # Minimum confidence threshold for trading
-        self.min_confidence = 0.5
+        self.min_confidence = 0.65  # Increased from 0.5 to reduce false signals
 
         # Persistent stats storage (survives bot restart)
         default_stats_file = os.path.join(os.path.dirname(__file__), "data", "strategy_stats.json")

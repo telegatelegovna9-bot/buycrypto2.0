@@ -87,11 +87,11 @@ class MeanReversionStrategy(BaseStrategy):
         
         if current_atr > 0:
             if direction == 'long':
-                stop_loss = current_price - 2 * current_atr
-                take_profit = bb_middle + current_atr  # Target middle band
+                stop_loss = current_price - 2.5 * current_atr  # Increased from 2x to reduce premature SL hits
+                take_profit = bb_middle + (1.5 * current_atr)  # Target middle band with better RR
             else:
-                stop_loss = current_price + 2 * current_atr
-                take_profit = bb_middle - current_atr
+                stop_loss = current_price + 2.5 * current_atr
+                take_profit = bb_middle - (1.5 * current_atr)
         else:
             sl_pct = 0.02
             tp_pct = 0.03

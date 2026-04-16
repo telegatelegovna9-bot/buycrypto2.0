@@ -80,11 +80,11 @@ class MomentumStrategy(BaseStrategy):
         
         if current_atr > 0:
             if direction == 'long':
-                stop_loss = current_price - 2 * current_atr
-                take_profit = current_price + 4 * current_atr
+                stop_loss = current_price - 2.5 * current_atr  # Increased from 2x to reduce premature SL hits
+                take_profit = current_price + 5 * current_atr  # Maintained 1:2 RR
             else:
-                stop_loss = current_price + 2 * current_atr
-                take_profit = current_price - 4 * current_atr
+                stop_loss = current_price + 2.5 * current_atr
+                take_profit = current_price - 5 * current_atr
         else:
             sl_pct = 0.02
             tp_pct = 0.04
