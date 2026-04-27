@@ -545,7 +545,7 @@ class ExecutionEngine:
         leverage: int
     ) -> bool:
         """
-        Execute a trading signal.
+        Execute a trading signal with exchange-side SL/TP.
         
         Args:
             signal: Trading signal dict with keys: direction, entry_price, symbol, stop_loss, take_profit
@@ -576,10 +576,46 @@ class ExecutionEngine:
                 return False
             
             actual_entry = order.get('average', entry_price)
-            logger.info(
-                f"[EXEC] Position opened without exchange SL/TP orders for {symbol}. "
-                f"Exit is managed by bot strategy (market close on SL/TP conditions)."
-            )
+            logger.info(f"Executed {side} order for {symbol}: {position_size} @ {actual_entry}")
+            
+            # Wait a moment for position to be registered on exchange
+            await asyncio.sleep(0.5)
+            
+            # Set exchange-side SL/TP
+            sl_side = 'sell' if side == 'buy' else 'buy'  # Opposite side for exit
+            sl_set = False
+            tp_set = False
+            
+            try:
+                if stop_loss:
+                    logger.info(f"[EXEC] Setting exchange SL for {symbol} at {stop_loss}...")
+                    sl_result = await self.set_stop_loss(symbol, sl_side, stop_loss, position_size)
+                    if sl_result:
+                        sl_set = True
+                        logger.info(f"[EXEC] SL set successfully for {symbol}")
+                    else:
+                        logger.warning(f"[EXEC] Failed to set SL for {symbol}, will manage locally")
+            except Exception as sl_error:
+                logger.error(f"[EXEC] SL setup error for {symbol}: {sl_error}")
+            
+            try:
+                if take_profit:
+                    logger.info(f"[EXEC] Setting exchange TP for {symbol} at {take_profit}...")
+                    tp_result = await self.set_take_profit(symbol, sl_side, take_profit, position_size)
+                    if tp_result:
+                        tp_set = True
+                        logger.info(f"[EXEC] TP set successfully for {symbol}")
+                    else:
+                        logger.warning(f"[EXEC] Failed to set TP for {symbol}, will manage locally")
+            except Exception as tp_error:
+                logger.error(f"[EXEC] TP setup error for {symbol}: {tp_error}")
+            
+            if sl_set and tp_set:
+                logger.info(f"[EXEC] Position opened with exchange SL/TP for {symbol} | SL={stop_loss} | TP={take_profit}")
+            elif sl_set or tp_set:
+                logger.info(f"[EXEC] Position opened with partial exchange protection for {symbol} | SL={sl_set} | TP={tp_set}")
+            else:
+                logger.warning(f"[EXEC] Position opened WITHOUT exchange SL/TP for {symbol}. Exit managed by bot locally.")
             
             return True
             
