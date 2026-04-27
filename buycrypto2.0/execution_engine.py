@@ -334,39 +334,21 @@ class ExecutionEngine:
             return None
 
     async def cancel_sl_tp_orders(self, symbol: str, order_type: str = 'all'):
-        """Cancel tracked SL/TP orders for a symbol."""
+        """Cancel tracked SL/TP orders for a symbol using new API methods."""
         if not self._initialized:
             await self.initialize()
 
         try:
             if order_type in ['sl', 'all'] and symbol in self.sl_orders:
                 sl_id = self.sl_orders[symbol].get('id')
-                sl_algo_id = self.sl_orders[symbol].get('algo_id')
-                if sl_algo_id and self.binance_api:
-                    await self.binance_api.cancel_algo_order(symbol, sl_algo_id)
-                elif sl_id:
-                    try:
-                        if self.binance_api:
-                            await self.binance_api.cancel_order(symbol, sl_id)
-                        else:
-                            await self.exchange.cancel_order(sl_id, symbol)
-                    except Exception as e:
-                        logger.debug(f"[CANCEL SL] {symbol}: {e}")
+                if sl_id and self.binance_api:
+                    await self.binance_api.cancel_stop_loss_take_profit_order(symbol, sl_id)
                 self.sl_orders.pop(symbol, None)
 
             if order_type in ['tp', 'all'] and symbol in self.tp_orders:
                 tp_id = self.tp_orders[symbol].get('id')
-                tp_algo_id = self.tp_orders[symbol].get('algo_id')
-                if tp_algo_id and self.binance_api:
-                    await self.binance_api.cancel_algo_order(symbol, tp_algo_id)
-                elif tp_id:
-                    try:
-                        if self.binance_api:
-                            await self.binance_api.cancel_order(symbol, tp_id)
-                        else:
-                            await self.exchange.cancel_order(tp_id, symbol)
-                    except Exception as e:
-                        logger.debug(f"[CANCEL TP] {symbol}: {e}")
+                if tp_id and self.binance_api:
+                    await self.binance_api.cancel_stop_loss_take_profit_order(symbol, tp_id)
                 self.tp_orders.pop(symbol, None)
         except Exception as e:
             logger.error(f"[CANCEL SL/TP ERROR] {symbol}: {e}")
@@ -545,7 +527,7 @@ class ExecutionEngine:
         leverage: int
     ) -> bool:
         """
-        Execute a trading signal.
+        Execute a trading signal with exchange-side SL/TP orders.
         
         Args:
             signal: Trading signal dict with keys: direction, entry_price, symbol, stop_loss, take_profit
@@ -576,10 +558,57 @@ class ExecutionEngine:
                 return False
             
             actual_entry = order.get('average', entry_price)
-            logger.info(
-                f"[EXEC] Position opened without exchange SL/TP orders for {symbol}. "
-                f"Exit is managed by bot strategy (market close on SL/TP conditions)."
-            )
+            logger.info(f"[EXEC] Position opened for {symbol}: {side.upper()} @ {actual_entry}")
+            
+            # CRITICAL: Set exchange-side SL/TP orders immediately after position open
+            # Wait a moment for position to be registered on exchange
+            await asyncio.sleep(0.5)
+            
+            # Determine opposite side for exit orders
+            exit_side = 'sell' if side == 'buy' else 'buy'
+            
+            # Set Stop Loss on exchange
+            sl_set = False
+            if stop_loss:
+                try:
+                    sl_order = await self.set_stop_loss(
+                        symbol=symbol,
+                        side=exit_side,
+                        stop_price=stop_loss,
+                        position_size=position_size
+                    )
+                    if sl_order:
+                        sl_set = True
+                        logger.info(f"[SL SET EXCHANGE] {symbol} {exit_side.upper()} @ {stop_loss}")
+                    else:
+                        logger.error(f"[SL FAIL] Could not set exchange SL for {symbol}")
+                except Exception as sl_error:
+                    logger.error(f"[SL ERROR] Exception setting SL: {sl_error}")
+            
+            # Set Take Profit on exchange
+            tp_set = False
+            if take_profit:
+                try:
+                    tp_order = await self.set_take_profit(
+                        symbol=symbol,
+                        side=exit_side,
+                        take_profit_price=take_profit,
+                        position_size=position_size
+                    )
+                    if tp_order:
+                        tp_set = True
+                        logger.info(f"[TP SET EXCHANGE] {symbol} {exit_side.upper()} @ {take_profit}")
+                    else:
+                        logger.error(f"[TP FAIL] Could not set exchange TP for {symbol}")
+                except Exception as tp_error:
+                    logger.error(f"[TP ERROR] Exception setting TP: {tp_error}")
+            
+            if sl_set and tp_set:
+                logger.info(f"[SUCCESS] Position {symbol} opened with exchange-side SL={stop_loss} and TP={take_profit}")
+            elif sl_set or tp_set:
+                logger.warning(f"[PARTIAL] Position {symbol} opened with partial exchange orders (SL={sl_set}, TP={tp_set})")
+            else:
+                logger.warning(f"[NO SL/TP] Position {symbol} opened WITHOUT exchange SL/TP - managed locally by bot")
             
             return True
             
@@ -610,3 +639,99 @@ class ExecutionEngine:
         except Exception as e:
             logger.error(f"[EXEC] Error fetching exchange positions: {e}", exc_info=True)
             return []
+    
+    async def get_exchange_sl_tp_orders(self, symbol: str = None) -> Dict:
+        """
+        Получить активные SL/TP ордера с биржи через algo orders API.
+        
+        Args:
+            symbol: Символ для проверки (None = все символы)
+        
+        Returns:
+            Dict с ключами 'sl' и 'tp', содержащими информацию о ордерах
+        """
+        result = {'sl': None, 'tp': None}
+        
+        try:
+            # Получаем все algo-ордера (включая SL/TP)
+            algo_orders = await self.binance_api.get_algo_orders(symbol)
+            
+            for order in algo_orders:
+                order_type = order.get('algoType', '')
+                order_side = order.get('side', '').lower()
+                stop_price = float(order.get('stopPrice', 0))
+                algo_id = order.get('algoId')
+                order_symbol = order.get('symbol', '')
+                
+                # Нормализуем символ для сравнения
+                if symbol:
+                    expected_symbol = await self.binance_api._normalize_symbol(symbol)
+                    if order_symbol != expected_symbol:
+                        continue
+                
+                if order_type == 'STOP_LOSS':
+                    result['sl'] = {
+                        'algo_id': algo_id,
+                        'side': order_side,
+                        'price': stop_price,
+                        'symbol': order_symbol
+                    }
+                    logger.debug(f"[SYNC SL/TP] Found SL for {order_symbol}: {stop_price}")
+                elif order_type == 'TAKE_PROFIT':
+                    result['tp'] = {
+                        'algo_id': algo_id,
+                        'side': order_side,
+                        'price': stop_price,
+                        'symbol': order_symbol
+                    }
+                    logger.debug(f"[SYNC SL/TP] Found TP for {order_symbol}: {stop_price}")
+            
+            if result['sl'] or result['tp']:
+                logger.info(f"[SYNC SL/TP] Synced orders for {symbol or 'all'}: SL={result['sl'] is not None}, TP={result['tp'] is not None}")
+            
+        except Exception as e:
+            logger.error(f"[SYNC SL/TP ERROR] Failed to fetch algo orders: {e}")
+        
+        return result
+    
+    async def sync_sl_tp_with_exchange(self):
+        """
+        Синхронизировать локальное состояние SL/TP с ордерами на бирже.
+        Вызывать при старте бота или при восстановлении контроля над позицией.
+        """
+        try:
+            # Получаем все открытые позиции
+            positions = await self.get_exchange_positions()
+            
+            for pos in positions:
+                symbol = pos.get('symbol')
+                if not symbol:
+                    continue
+                
+                # Получаем ордера для этого символа
+                orders = await self.get_exchange_sl_tp_orders(symbol)
+                
+                if orders['sl']:
+                    self.sl_orders[symbol] = {
+                        'id': None,  # CCXT order ID не используется для algo
+                        'algo_id': orders['sl']['algo_id'],
+                        'type': 'STOP_LOSS',
+                        'side': orders['sl']['side'],
+                        'price': orders['sl']['price']
+                    }
+                    logger.info(f"[SYNC] Restored SL for {symbol}: {orders['sl']['price']}")
+                
+                if orders['tp']:
+                    self.tp_orders[symbol] = {
+                        'id': None,
+                        'algo_id': orders['tp']['algo_id'],
+                        'type': 'TAKE_PROFIT',
+                        'side': orders['tp']['side'],
+                        'price': orders['tp']['price']
+                    }
+                    logger.info(f"[SYNC] Restored TP for {symbol}: {orders['tp']['price']}")
+            
+            logger.info("[SYNC SL/TP] Synchronization complete")
+            
+        except Exception as e:
+            logger.error(f"[SYNC SL/TP ERROR] Synchronization failed: {e}")
