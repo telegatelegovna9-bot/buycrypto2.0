@@ -159,7 +159,7 @@ class BinanceFuturesAPI:
 
     async def place_stop_loss(self, symbol: str, side: str, stop_price: float, position_size: float = None) -> Dict:
         """
-        Place STOP_MARKET order via /fapi/v1/order with closePosition=true
+        Place STOP_MARKET order via /fapi/v1/order with reduceOnly=true
         Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order
         """
         binance_symbol = await self._normalize_symbol(symbol)
@@ -171,33 +171,39 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[SL] Detected position size: {position_size} for {symbol}")
         
-        algo_params = {
+        # Determine the correct side for closing the position
+        # For LONG position (side=BUY), SL is SELL order
+        # For SHORT position (side=SELL), SL is BUY order
+        close_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
+        
+        order_params = {
             'symbol': binance_symbol,
-            'side': side.upper(),
-            'algoType': 'STOP_LOSS',
+            'side': close_side,
+            'type': 'STOP_MARKET',
             'stopPrice': stop_price,
             'quantity': position_size,
             'reduceOnly': 'true',
-            'workingType': 'MARK_PRICE'
+            'workingType': 'MARK_PRICE',
+            'closePosition': 'false'  # We specify quantity explicitly
         }
         
-        logger.info(f"[NATIVE API] Placing SL via /algo/order for {symbol}: Side={side}, Stop={stop_price}")
+        logger.info(f"[NATIVE API] Placing SL via /fapi/v1/order for {symbol}: Side={close_side}, Stop={stop_price}, Qty={position_size}")
         try:
             result = await self._request(
                 'POST',
-                '/fapi/v1/algoOrder',
-                params=algo_params,
+                '/fapi/v1/order',
+                params=order_params,
                 signed=True
             )
-            logger.info(f"[NATIVE API] SL algo order placed: AlgoId={result.get('algoId')}")
+            logger.info(f"[NATIVE API] SL order placed: OrderId={result.get('orderId')}, Status={result.get('status')}")
             return result
         except Exception as algo_error:
-            logger.warning(f"[NATIVE API] SL algo order failed: {self._safe_preview(str(algo_error))}")
+            logger.warning(f"[NATIVE API] SL order failed: {self._safe_preview(str(algo_error))}")
             raise
 
     async def place_take_profit(self, symbol: str, side: str, tp_price: float, position_size: float = None) -> Dict:
         """
-        Place TAKE_PROFIT_MARKET order via /fapi/v1/order with closePosition=true
+        Place TAKE_PROFIT_MARKET order via /fapi/v1/order with reduceOnly=true
         Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order
         """
         binance_symbol = await self._normalize_symbol(symbol)
@@ -209,82 +215,78 @@ class BinanceFuturesAPI:
                 raise Exception(f"No open position found for {symbol}")
             logger.info(f"[TP] Detected position size: {position_size} for {symbol}")
         
-        algo_params = {
+        # Determine the correct side for closing the position
+        # For LONG position (side=BUY), TP is SELL order
+        # For SHORT position (side=SELL), TP is BUY order
+        close_side = 'SELL' if side.upper() == 'BUY' else 'BUY'
+        
+        order_params = {
             'symbol': binance_symbol,
-            'side': side.upper(),
-            'algoType': 'TAKE_PROFIT',
+            'side': close_side,
+            'type': 'TAKE_PROFIT_MARKET',
             'stopPrice': tp_price,
             'quantity': position_size,
             'reduceOnly': 'true',
-            'workingType': 'MARK_PRICE'
+            'workingType': 'MARK_PRICE',
+            'closePosition': 'false'  # We specify quantity explicitly
         }
         
-        logger.info(f"[NATIVE API] Placing TP via /algo/order for {symbol}: Side={side}, TP={tp_price}")
+        logger.info(f"[NATIVE API] Placing TP via /fapi/v1/order for {symbol}: Side={close_side}, TP={tp_price}, Qty={position_size}")
         try:
             result = await self._request(
                 'POST',
-                '/fapi/v1/algoOrder',
-                params=algo_params,
+                '/fapi/v1/order',
+                params=order_params,
                 signed=True
             )
-            logger.info(f"[NATIVE API] TP algo order placed: AlgoId={result.get('algoId')}")
+            logger.info(f"[NATIVE API] TP order placed: OrderId={result.get('orderId')}, Status={result.get('status')}")
             return result
         except Exception as algo_error:
-            logger.warning(f"[NATIVE API] TP algo order failed: {self._safe_preview(str(algo_error))}")
+            logger.warning(f"[NATIVE API] TP order failed: {self._safe_preview(str(algo_error))}")
             raise
 
-    async def get_algo_orders(self, symbol: str = None) -> list:
-        """Fetch open algo orders (including SL/TP)"""
+    async def get_stop_loss_take_profit_orders(self, symbol: str = None) -> list:
+        """Fetch open STOP_LOSS and TAKE_PROFIT orders (regular orders, not algo)"""
         params = {}
         if symbol:
             params['symbol'] = await self._normalize_symbol(symbol)
         
         try:
-            orders = await self._request(
-                'GET',
-                '/fapi/v1/openAlgoOrders',
-                params=params,
-                signed=True
-            )
-            return orders.get('data', [])
+            # Get all open orders and filter for SL/TP
+            all_orders = await self._request('GET', '/fapi/v1/openOrders', params=params, signed=True)
+            sl_tp_orders = [
+                order for order in all_orders 
+                if order.get('type') in ['STOP_MARKET', 'TAKE_PROFIT_MARKET', 'STOP', 'TAKE_PROFIT']
+            ]
+            return sl_tp_orders
         except Exception as e:
-            logger.error(f"Failed to fetch algo orders: {e}")
+            logger.error(f"Failed to fetch SL/TP orders: {e}")
             return []
 
-    async def cancel_algo_order(self, symbol: str, algo_id: str) -> bool:
-        """Cancel a specific algo order (SL/TP)"""
+    async def cancel_stop_loss_take_profit_order(self, symbol: str, order_id: int) -> bool:
+        """Cancel a specific SL/TP order"""
         params = {
             'symbol': await self._normalize_symbol(symbol),
-            'algoId': algo_id
+            'orderId': order_id
         }
         try:
-            await self._request(
-                'DELETE',
-                '/fapi/v1/algoOrder',
-                params=params,
-                signed=True
-            )
+            await self._request('DELETE', '/fapi/v1/order', params=params, signed=True)
             return True
         except Exception as e:
-            logger.error(f"Failed to cancel algo order {algo_id}: {e}")
+            logger.error(f"Failed to cancel SL/TP order {order_id}: {e}")
             return False
 
-    async def cancel_all_algo_orders(self, symbol: str) -> bool:
-        """Cancel all open algo orders for a symbol"""
-        params = {
-            'symbol': await self._normalize_symbol(symbol)
-        }
-        try:
-            await self._request(
-                'DELETE',
-                '/fapi/v1/algoOpenOrders',
-                params=params,
-                signed=True
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Failed to cancel all algo orders for {symbol}: {e}")
-            return False
+    async def cancel_all_stop_loss_take_profit_orders(self, symbol: str) -> bool:
+        """Cancel all SL/TP orders for a symbol"""
+        sl_tp_orders = await self.get_stop_loss_take_profit_orders(symbol)
+        success = True
+        for order in sl_tp_orders:
+            order_id = order.get('orderId')
+            if order_id:
+                result = await self.cancel_stop_loss_take_profit_order(symbol, order_id)
+                if not result:
+                    success = False
+        return success
 
     async def get_open_orders(self, symbol: str = None) -> list:
         """Fetch regular open orders (non-algo)"""

@@ -334,39 +334,21 @@ class ExecutionEngine:
             return None
 
     async def cancel_sl_tp_orders(self, symbol: str, order_type: str = 'all'):
-        """Cancel tracked SL/TP orders for a symbol."""
+        """Cancel tracked SL/TP orders for a symbol using new API methods."""
         if not self._initialized:
             await self.initialize()
 
         try:
             if order_type in ['sl', 'all'] and symbol in self.sl_orders:
                 sl_id = self.sl_orders[symbol].get('id')
-                sl_algo_id = self.sl_orders[symbol].get('algo_id')
-                if sl_algo_id and self.binance_api:
-                    await self.binance_api.cancel_algo_order(symbol, sl_algo_id)
-                elif sl_id:
-                    try:
-                        if self.binance_api:
-                            await self.binance_api.cancel_order(symbol, sl_id)
-                        else:
-                            await self.exchange.cancel_order(sl_id, symbol)
-                    except Exception as e:
-                        logger.debug(f"[CANCEL SL] {symbol}: {e}")
+                if sl_id and self.binance_api:
+                    await self.binance_api.cancel_stop_loss_take_profit_order(symbol, sl_id)
                 self.sl_orders.pop(symbol, None)
 
             if order_type in ['tp', 'all'] and symbol in self.tp_orders:
                 tp_id = self.tp_orders[symbol].get('id')
-                tp_algo_id = self.tp_orders[symbol].get('algo_id')
-                if tp_algo_id and self.binance_api:
-                    await self.binance_api.cancel_algo_order(symbol, tp_algo_id)
-                elif tp_id:
-                    try:
-                        if self.binance_api:
-                            await self.binance_api.cancel_order(symbol, tp_id)
-                        else:
-                            await self.exchange.cancel_order(tp_id, symbol)
-                    except Exception as e:
-                        logger.debug(f"[CANCEL TP] {symbol}: {e}")
+                if tp_id and self.binance_api:
+                    await self.binance_api.cancel_stop_loss_take_profit_order(symbol, tp_id)
                 self.tp_orders.pop(symbol, None)
         except Exception as e:
             logger.error(f"[CANCEL SL/TP ERROR] {symbol}: {e}")
