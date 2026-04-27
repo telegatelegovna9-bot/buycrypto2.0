@@ -29,7 +29,9 @@ class TrendBreakoutStrategy(BaseStrategy):
         self.ema_slow = self.config.get('ema_slow', 21)
         self.atr_period = self.config.get('atr_period', 14)
         self.breakout_window = self.config.get('breakout_window', 20)
-        self.min_trend_strength = self.config.get('min_trend_strength', 0.3)
+        self.min_trend_strength = self.config.get('min_trend_strength', 0.4)  # Increased from 0.3 to 0.4
+        self.require_breakout_confirmation = self.config.get('require_breakout_confirmation', True)
+        self.min_volume_ratio = self.config.get('min_volume_ratio', 1.3)  # Volume confirmation for breakouts
     
     def _calculate_ema(self, df: pd.DataFrame, period: int) -> pd.Series:
         """Calculate Exponential Moving Average."""
@@ -111,19 +113,28 @@ class TrendBreakoutStrategy(BaseStrategy):
         # Check market structure
         market_structure = MarketStructureAnalyzer.identify_structure(df)
         
-        # Calculate base confidence
+        # Calculate base confidence with stricter requirements
         confidence = 0.0
         
-        # Trend alignment
-        if trend_strength > self.min_trend_strength:
-            confidence += 0.3
+        # Volume confirmation for breakouts
+        volume_confirmed = True
+        if self.require_breakout_confirmation:
+            avg_volume = df['volume'].mean()
+            if avg_volume > 0 and df['volume'].iloc[-1] < avg_volume * self.min_volume_ratio:
+                volume_confirmed = False
         
-        # Breakout confirmation
+        # Trend alignment - require stronger trend
+        if trend_strength >= self.min_trend_strength:
+            confidence += 0.35  # Increased from 0.3
+        
+        # Breakout confirmation - only count if volume confirmed
         if is_breakout:
-            if breakout_direction == trend_direction:
-                confidence += 0.4  # Strong confirmation
+            if breakout_direction == trend_direction and volume_confirmed:
+                confidence += 0.4  # Strong confirmation with volume
+            elif breakout_direction == trend_direction:
+                confidence += 0.2  # Weaker without volume
             else:
-                confidence += 0.1  # Weak signal
+                confidence += 0.1  # Weak signal (counter-trend breakout)
         
         # Market structure confirmation
         if trend_direction == 'long' and market_structure == 'uptrend':
@@ -131,17 +142,17 @@ class TrendBreakoutStrategy(BaseStrategy):
         elif trend_direction == 'short' and market_structure == 'downtrend':
             confidence += 0.2
         
-        # Volume confirmation (if available)
+        # Volume confirmation bonus (if above average)
         volume_ratio = market_data.get('ticker', {}).get('quoteVolume', 0)
         avg_volume = df['volume'].mean()
-        if avg_volume > 0 and df['volume'].iloc[-1] > avg_volume * 1.2:
+        if avg_volume > 0 and df['volume'].iloc[-1] > avg_volume * 1.3:
             confidence += 0.1  # Above average volume
         
         # Cap confidence at 1.0
         confidence = min(confidence, 1.0)
         
-        # If no clear direction, return neutral
-        if trend_direction == 'neutral' or confidence < 0.4:
+        # If no clear direction or weak signal, return neutral
+        if trend_direction == 'neutral' or confidence < 0.45:  # Increased from 0.4 to 0.45
             return Signal(
                 symbol=symbol,
                 direction='neutral',

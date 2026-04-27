@@ -29,8 +29,10 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         self.bb_std = self.config.get('bb_std', 2.0)
         self.atr_period = self.config.get('atr_period', 14)
         self.volatility_lookback = self.config.get('volatility_lookback', 50)
-        self.squeeze_threshold = self.config.get('squeeze_threshold', 0.5)  # Bottom 50% of vol
+        self.squeeze_threshold = self.config.get('squeeze_threshold', 0.4)  # Decreased from 0.5 to 0.4 (stricter squeeze)
         self.breakout_multiplier = self.config.get('breakout_multiplier', 1.5)
+        self.require_momentum_confirmation = self.config.get('require_momentum_confirmation', True)
+        self.min_momentum = self.config.get('min_momentum', 0.025)  # Increased from 0.02 to 0.025
     
     def _calculate_bollinger_bands(
         self, 
@@ -131,39 +133,47 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         # Check for breakout
         is_breakout, breakout_dir = self._detect_breakout(df, upper, lower)
         
-        # Determine signal
+        # Determine signal - stricter conditions for higher quality setups
         direction = 'neutral'
         confidence = 0.0
         
         # High confidence setup: squeeze + breakout + momentum confirmation
         if is_squeeze and is_breakout:
-            if breakout_dir == 'up' and momentum.iloc[-1] > 0.02:  # 2% momentum
-                direction = 'long'
-                confidence = 0.6
-                
-                # Extra confidence if ATR expanding
-                if current_atr > avg_atr * 1.2:
-                    confidence += 0.2
+            current_momentum = momentum.iloc[-1]
+            
+            if breakout_dir == 'up':
+                # Require positive momentum above threshold
+                if not self.require_momentum_confirmation or current_momentum >= self.min_momentum:
+                    direction = 'long'
+                    confidence = 0.65  # Base confidence for squeeze+breakout
                     
-            elif breakout_dir == 'down' and momentum.iloc[-1] < -0.02:
-                direction = 'short'
-                confidence = 0.6
-                
-                if current_atr > avg_atr * 1.2:
-                    confidence += 0.2
+                    # Extra confidence if ATR expanding
+                    if current_atr > avg_atr * 1.2:
+                        confidence += 0.2
+                    elif current_atr > avg_atr * 1.1:
+                        confidence += 0.1
+                        
+            elif breakout_dir == 'down':
+                # Require negative momentum below threshold
+                if not self.require_momentum_confirmation or current_momentum <= -self.min_momentum:
+                    direction = 'short'
+                    confidence = 0.65
+                    
+                    if current_atr > avg_atr * 1.2:
+                        confidence += 0.2
+                    elif current_atr > avg_atr * 1.1:
+                        confidence += 0.1
         
-        # Medium confidence: strong breakout without squeeze
+        # Medium confidence: strong breakout without squeeze - require stronger momentum
         elif is_breakout:
             momentum_abs = abs(momentum.iloc[-1])
-            if momentum_abs > 0.03:  # 3% move
-                direction = breakout_dir if breakout_dir == 'up' else 'short'
-                if breakout_dir == 'down':
-                    direction = 'short'
-                confidence = 0.4 + min(momentum_abs / 0.05, 0.3)
+            if momentum_abs >= 0.035:  # Increased from 0.03 to 0.035 (3.5% move)
+                direction = 'long' if breakout_dir == 'up' else 'short'
+                confidence = 0.45 + min(momentum_abs / 0.06, 0.3)  # Start at 0.45
         
         confidence = min(confidence, 1.0)
         
-        if direction == 'neutral' or confidence < 0.4:
+        if direction == 'neutral' or confidence < 0.45:  # Increased from 0.4 to 0.45
             return Signal(
                 symbol=symbol,
                 direction='neutral',

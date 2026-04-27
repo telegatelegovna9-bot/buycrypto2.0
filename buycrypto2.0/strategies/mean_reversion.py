@@ -25,8 +25,10 @@ class MeanReversionStrategy(BaseStrategy):
         self.rsi_period = self.config.get('rsi_period', 14)
         self.bb_window = self.config.get('bb_window', 20)
         self.bb_std = self.config.get('bb_std', 2.0)
-        self.overbought_threshold = self.config.get('overbought_threshold', 70)
-        self.oversold_threshold = self.config.get('oversold_threshold', 30)
+        self.overbought_threshold = self.config.get('overbought_threshold', 75)  # Increased from 70 to 75
+        self.oversold_threshold = self.config.get('oversold_threshold', 25)  # Decreased from 30 to 25
+        self.min_rsi_extreme = self.config.get('min_rsi_extreme', 80)  # For high confidence signals
+        self.require_divergence = self.config.get('require_divergence', False)  # Optional divergence check
 
     def generate_signal(
         self,
@@ -60,17 +62,24 @@ class MeanReversionStrategy(BaseStrategy):
         direction = 'neutral'
         confidence = 0.0
         
-        # Overbought condition (short signal)
-        if current_rsi > self.overbought_threshold and current_price > bb_upper:
+        # Stricter overbought/oversold conditions with BB confirmation
+        # Overbought condition (short signal): RSI > 75 AND price above BB upper
+        if current_rsi > self.overbought_threshold and current_price >= bb_upper:
             direction = 'short'
-            # Higher RSI = higher confidence
-            confidence = 0.5 + min((current_rsi - self.overbought_threshold) / 100, 0.5)
+            # Higher RSI = higher confidence, starting at 0.65
+            confidence = 0.65 + min((current_rsi - self.overbought_threshold) / 50, 0.35)
+            # Extra confidence for extreme RSI
+            if current_rsi >= self.min_rsi_extreme:
+                confidence = min(confidence + 0.1, 1.0)
         
-        # Oversold condition (long signal)
-        elif current_rsi < self.oversold_threshold and current_price < bb_lower:
+        # Oversold condition (long signal): RSI < 25 AND price below BB lower
+        elif current_rsi < self.oversold_threshold and current_price <= bb_lower:
             direction = 'long'
-            # Lower RSI = higher confidence
-            confidence = 0.5 + min((self.oversold_threshold - current_rsi) / 100, 0.5)
+            # Lower RSI = higher confidence, starting at 0.65
+            confidence = 0.65 + min((self.oversold_threshold - current_rsi) / 50, 0.35)
+            # Extra confidence for extreme RSI
+            if current_rsi <= (100 - self.min_rsi_extreme):
+                confidence = min(confidence + 0.1, 1.0)
 
         if direction == 'neutral' or confidence < 0.5:
             return Signal(

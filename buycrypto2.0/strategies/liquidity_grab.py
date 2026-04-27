@@ -21,8 +21,10 @@ class LiquidityGrabStrategy(BaseStrategy):
     def __init__(self, config: Dict = None):
         super().__init__("LiquidityGrab", config)
         self.lookback_period = self.config.get('lookback_period', 10)
-        self.min_shadow_ratio = self.config.get('min_shadow_ratio', 2.0)
-        self.confirmation_candles = self.config.get('confirmation_candles', 1)
+        self.min_shadow_ratio = self.config.get('min_shadow_ratio', 2.5)  # Increased from 2.0 to 2.5
+        self.confirmation_candles = self.config.get('confirmation_candles', 2)  # Increased from 1 to 2
+        self.require_volume_confirmation = self.config.get('require_volume_confirmation', True)
+        self.min_volume_ratio = self.config.get('min_volume_ratio', 1.3)  # Volume spike confirmation
 
     def _find_local_extremes(self, df: pd.DataFrame) -> tuple:
         """Find local highs and lows."""
@@ -62,22 +64,32 @@ class LiquidityGrabStrategy(BaseStrategy):
         upper_shadow = last_candle['high'] - max(last_candle['open'], last_candle['close'])
         lower_shadow = min(last_candle['open'], last_candle['close']) - last_candle['low']
         
+        # Volume confirmation check
+        volume_confirmed = True
+        if self.require_volume_confirmation:
+            volume_ma = df['volume'].rolling(20).mean().iloc[-1]
+            current_volume = df['volume'].iloc[-1]
+            volume_confirmed = current_volume > volume_ma * self.min_volume_ratio
+        
         direction = 'neutral'
         confidence = 0.0
         
-        # Bullish liquidity grab (stop hunt below support)
-        if last_candle['low'] < prev_low and upper_shadow > body * self.min_shadow_ratio:
-            # Price swept low but closed back above
-            if last_candle['close'] > prev_low:
+        # Bullish liquidity grab (stop hunt below support) - stricter conditions
+        # Require: sweep of low + long lower shadow + close back above level + volume confirmation
+        if last_candle['low'] < prev_low and lower_shadow > body * self.min_shadow_ratio:
+            if last_candle['close'] > prev_low and volume_confirmed:
                 direction = 'long'
-                confidence = 0.65 + min((upper_shadow / body - self.min_shadow_ratio) * 0.1, 0.35)
+                # Higher confidence with stronger shadow and volume
+                shadow_ratio = lower_shadow / body if body > 0 else self.min_shadow_ratio
+                confidence = 0.65 + min((shadow_ratio - self.min_shadow_ratio) * 0.15, 0.35)
         
-        # Bearish liquidity grab (stop hunt above resistance)
-        elif last_candle['high'] > prev_high and lower_shadow > body * self.min_shadow_ratio:
-            # Price swept high but closed back below
-            if last_candle['close'] < prev_high:
+        # Bearish liquidity grab (stop hunt above resistance) - stricter conditions
+        # Require: sweep of high + long upper shadow + close back below level + volume confirmation
+        elif last_candle['high'] > prev_high and upper_shadow > body * self.min_shadow_ratio:
+            if last_candle['close'] < prev_high and volume_confirmed:
                 direction = 'short'
-                confidence = 0.65 + min((lower_shadow / body - self.min_shadow_ratio) * 0.1, 0.35)
+                shadow_ratio = upper_shadow / body if body > 0 else self.min_shadow_ratio
+                confidence = 0.65 + min((shadow_ratio - self.min_shadow_ratio) * 0.15, 0.35)
 
         if direction == 'neutral' or confidence < 0.5:
             return Signal(

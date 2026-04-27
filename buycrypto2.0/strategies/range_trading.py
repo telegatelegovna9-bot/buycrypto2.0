@@ -27,9 +27,10 @@ class RangeTradingStrategy(BaseStrategy):
         super().__init__("RangeTrading", config)
         self.rsi_period = self.config.get('rsi_period', 14)
         self.range_window = self.config.get('range_window', 20)
-        self.rsi_overbought = self.config.get('rsi_overbought', 70)
-        self.rsi_oversold = self.config.get('rsi_oversold', 30)
-        self.min_range_width = self.config.get('min_range_width', 0.02)  # 2%
+        self.rsi_overbought = self.config.get('rsi_overbought', 75)  # Increased from 70 to 75
+        self.rsi_oversold = self.config.get('rsi_oversold', 25)  # Decreased from 30 to 25
+        self.min_range_width = self.config.get('min_range_width', 0.025)  # Increased from 2% to 2.5%
+        self.require_strong_rsi = self.config.get('require_strong_rsi', True)  # Require RSI extremes
     
     def _identify_range(
         self, 
@@ -115,32 +116,34 @@ class RangeTradingStrategy(BaseStrategy):
         else:
             range_position = 0.5
         
-        # Determine signal
+        # Determine signal - stricter conditions for better entry quality
         direction = 'neutral'
         confidence = 0.0
         
-        # Long setup: price near support + RSI oversold
-        if range_position < 0.2 and rsi < self.rsi_oversold:
+        # Long setup: price very close to support (within 1%) + RSI strongly oversold (<25)
+        if range_position < 0.15 and rsi < self.rsi_oversold:
             direction = 'long'
             # Higher confidence if closer to support and more oversold
             distance_from_support = (current_price - support) / support if support > 0 else 0
             oversold_degree = (self.rsi_oversold - rsi) / self.rsi_oversold
             
-            confidence = 0.4 + (0.3 * (1 - distance_from_support / 0.02)) + (0.3 * oversold_degree)
+            # Start at 0.65 base confidence, add more for better setups
+            confidence = 0.65 + (0.2 * (1 - distance_from_support / 0.015)) + (0.15 * oversold_degree)
             
-        # Short setup: price near resistance + RSI overbought
-        elif range_position > 0.8 and rsi > self.rsi_overbought:
+        # Short setup: price very close to resistance (within 1%) + RSI strongly overbought (>75)
+        elif range_position > 0.85 and rsi > self.rsi_overbought:
             direction = 'short'
             # Higher confidence if closer to resistance and more overbought
             distance_from_resistance = (resistance - current_price) / resistance if resistance > 0 else 0
             overbought_degree = (rsi - self.rsi_overbought) / (100 - self.rsi_overbought)
             
-            confidence = 0.4 + (0.3 * (1 - distance_from_resistance / 0.02)) + (0.3 * overbought_degree)
+            # Start at 0.65 base confidence, add more for better setups
+            confidence = 0.65 + (0.2 * (1 - distance_from_resistance / 0.015)) + (0.15 * overbought_degree)
         
         # Cap confidence
         confidence = min(confidence, 1.0)
         
-        if direction == 'neutral' or confidence < 0.4:
+        if direction == 'neutral' or confidence < 0.5:
             return Signal(
                 symbol=symbol,
                 direction='neutral',

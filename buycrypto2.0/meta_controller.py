@@ -77,7 +77,7 @@ class MetaController:
         }
         
         # Minimum confidence threshold for trading
-        self.min_confidence = 0.60  # Reduced from 0.65 to allow more signals from all 9 strategies
+        self.min_confidence = 0.70  # Raised from 0.60 to filter out weak signals and reduce losing trades
 
         # Persistent stats storage (survives bot restart)
         default_stats_file = os.path.join(os.path.dirname(__file__), "data", "strategy_stats.json")
