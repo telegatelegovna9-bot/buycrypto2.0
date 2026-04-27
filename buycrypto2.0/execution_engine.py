@@ -1,6 +1,6 @@
 """
 Execution Engine: Handles order execution and position management.
-Uses native Binance API for exchange-side SL/TP with algo endpoint fallback logic.
+Uses CCXT with closePosition=True for exchange-side SL/TP.
 """
 import ccxt.async_support as ccxt
 import asyncio
@@ -8,7 +8,6 @@ from typing import Dict, Optional, List
 import logging
 from strategies.base_strategy import Signal
 from risk_manager import Position
-from binance_native_api import BinanceFuturesAPI
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +16,7 @@ class ExecutionEngine:
     """
     Handles all exchange interactions for order execution.
     Supports market orders, limit orders, stop-loss, and take-profit.
+    Uses CCXT with STOP_MARKET/TAKE_PROFIT_MARKET + closePosition=True
     """
     
     def __init__(self, config):
@@ -24,7 +24,6 @@ class ExecutionEngine:
         self.exchange_config = config.exchange
         
         self.exchange = None
-        self.binance_api = None
         self._initialized = False
         
         # Order tracking

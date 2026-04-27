@@ -1,0 +1,1 @@
+Nothing needs to be added to .gitignore since only a Python source file (`buycrypto2.0/execution_engine.py`) was modified and no build artifacts, dependencies, or temporary files were detected in the changes.
